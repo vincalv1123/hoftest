@@ -410,3 +410,53 @@ export async function leagueInfo() { return { id: 'demo', name: LEAGUE_NAME, sea
 export async function lookupUser() { return null; }
 export async function nflState() { return { season: String(CURRENT), week: LIVE_WEEK }; }
 export async function userLeagues() { return []; }
+
+// Made-up box scores that roughly add up to each player's points that week (same seed, same numbers).
+function hashSeed(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+function fakeStats(pos, pts, rnd) {
+  const ri = (a, b) => a + Math.floor(rnd() * (b - a + 1));
+  if (pos === 'DEF') {
+    const allow = pts >= 14 ? ri(0, 10) : pts >= 8 ? ri(10, 20) : pts >= 3 ? ri(17, 27) : ri(24, 41);
+    return { sack: ri(0, 5), int: pts >= 8 ? ri(0, 2) : ri(0, 1), fum_rec: ri(0, 1), def_td: pts >= 16 && rnd() < 0.5 ? 1 : 0, pts_allow: allow };
+  }
+  if (!pts) return null;
+  if (pos === 'K') { const fgm = Math.max(0, Math.floor(pts / 3.6)); const xpm = Math.max(0, Math.round(pts - 3 * fgm)); return { fgm, fga: fgm + (rnd() < 0.2 ? 1 : 0), fgm_lng: fgm ? ri(28, 58) : 0, xpm, xpa: xpm }; }
+  if (pos === 'QB') {
+    const int = rnd() < 0.55 ? 0 : ri(1, 2); const ry = ri(0, 35); let rtd = rnd() < 0.07 ? 1 : 0;
+    let td = Math.max(0, Math.round(pts / 9 + (rnd() - 0.5) * 1.6));
+    let py = (pts - 4 * td + 2 * int - 0.1 * ry - 6 * rtd) / 0.04;
+    while (py < 80 && td > 0) { td--; py += 100; }
+    if (py < 80) { rtd = 0; py = Math.max(60, (pts + 2 * int - 0.1 * ry) / 0.04); }
+    py = Math.round(Math.min(py, 520));
+    const att = Math.max(14, Math.round(py / 7.3 + (rnd() - 0.5) * 8)); const cmp = Math.min(att, Math.round(att * (0.58 + rnd() * 0.14)));
+    return { pass_cmp: cmp, pass_att: att, pass_yd: py, pass_td: td, pass_int: int, rush_att: ry ? ri(1, 7) : 0, rush_yd: ry, rush_td: rtd };
+  }
+  if (pts < 0) return pos === 'RB' ? { rush_att: ri(1, 5), rush_yd: ri(0, 8), fum_lost: 1 } : { rec: 1, rec_tgt: ri(1, 4), rec_yd: ri(0, 8), fum_lost: 1 };
+  let td = pts >= 12 ? Math.max(0, Math.round((pts - 8) / 8 + (rnd() - 0.5) * 1.2)) : rnd() < 0.08 ? 1 : 0;
+  if (pos === 'RB') {
+    let rec = ri(0, 6); let recYd = Math.round(rec * (4 + rnd() * 6));
+    let ry = Math.round((pts - 6 * td - 0.5 * rec - 0.1 * recYd) / 0.1);
+    if (ry < 0) { td = 0; ry = Math.round((pts - 0.5 * rec - 0.1 * recYd) / 0.1); }
+    if (ry < 0) { rec = 0; recYd = 0; ry = Math.max(0, Math.round(pts / 0.1)); }
+    const recTd = td && rnd() < 0.25 ? 1 : 0;
+    return { rush_att: Math.max(2, Math.round(ry / 4.3 + (rnd() - 0.5) * 6)), rush_yd: ry, rush_td: td - recTd, rec, rec_tgt: rec + ri(0, 2), rec_yd: recYd, rec_td: recTd };
+  }
+  let rec = Math.max(1, Math.round(pts / 2.7 + (rnd() - 0.5) * 3));
+  let yd = Math.round((pts - 0.5 * rec - 6 * td) / 0.1);
+  if (yd < rec * 4) { td = 0; yd = Math.round((pts - 0.5 * rec) / 0.1); }
+  if (yd < rec * 4) { rec = Math.max(1, Math.round(pts / 2)); yd = Math.max(1, Math.round((pts - 0.5 * rec) / 0.1)); }
+  return { rec, rec_tgt: rec + ri(0, 4), rec_yd: Math.max(0, yd), rec_td: td };
+}
+export async function loadWeekStats(season, week, live) {
+  if (!built) return {};
+  const pts = {};
+  if (live) (await loadLiveWeek()).forEach(m => Object.assign(pts, m.players_points));
+  else { const raw = built.seasons.find(x => x.season === String(season)); ((raw && raw.matchups[week - 1]) || []).forEach(m => Object.assign(pts, m.players_points)); }
+  const seed = seedFromUrl(); const out = {};
+  Object.keys(pts).forEach(pid => {
+    const pos = built.players[pid] ? built.players[pid][1] : '';
+    const st = fakeStats(pos, pts[pid], rng(hashSeed(seed + ':' + season + ':' + week + ':' + pid)));
+    if (st) out[pid] = st;
+  });
+  return out;
+}
