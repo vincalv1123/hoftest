@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hall of Fame Demo</title>
+<meta name="description" content="A demo fantasy football hall of fame for a simulated ten-season league: titles, records, trades, drafts and awards.">
+<meta name="theme-color" content="#0C171A">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230C171A'/%3E%3Cpath d='M12 5v14M5.9 8.5l12.2 7M5.9 15.5l12.2-7' stroke='%23E8B04B' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css?v=202610290502">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#all" id="brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v18M4.2 7.5l15.6 9M4.2 16.5l15.6-9"/></svg>
+      Hall of Fame Demo
+    </a>
+    <span class="hdr-right"><span class="meta" id="meta"></span><button type="button" class="refresh" id="refresh" hidden aria-label="Simulate a new random league"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg><span class="refresh-label">New league</span></button></span>
+  </div>
+</header>
+<div class="layout">
+<aside class="wrap side" id="side"><nav class="leagues" id="leagues" aria-label="League"></nav><nav class="tabs" id="tabs" aria-label="Sections and seasons"></nav></aside>
+<div class="content">
+<main id="app"><div class="wrap status" id="status">Loading…</div></main>
+<footer><div class="wrap"><span>Simulated league · every name and stat is randomly generated</span><span>Tap “New league” for a different ten seasons.</span></div></footer>
+</div>
+</div>
+<script>/* fresh-check */(function(){var V="202610290502";try{fetch("version.txt?t="+Date.now(),{cache:"no-store"}).then(function(r){return r.ok?r.text():""}).then(function(t){t=(t||"").trim();var u=new URL(location.href);if(t&&t!==V&&u.searchParams.get("fresh")!==t){u.searchParams.set("fresh",t);location.replace(u.toString());}}).catch(function(){});}catch(e){}})();</script>
+<script type="module" src="js/app.js?v=202610290502"></script>
+</body>
+</html>
