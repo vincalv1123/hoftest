@@ -2,7 +2,7 @@
 // Nothing here talks to Sleeper. It builds the same shapes the real site loads, so every page works the same.
 // The same seed always makes the same league; ?seed=<number> makes a different one.
 
-const FIRST = 2017;
+let FIRST = 2017;
 const CURRENT = 2026;
 const LIVE_WEEK = 8;            // week being played "right now" in the current season
 const TEAMS = 12;
@@ -18,14 +18,48 @@ const ELIG = { QB: ['QB'], RB: ['RB'], WR: ['WR'], TE: ['TE'], K: ['K'], DEF: ['
 let LEAGUE_NAME = 'Demo League';
 const ROOKIE_ROUNDS = 3;
 const SUPPLEMENTAL_YEARS = { 2020: 3, 2023: 3, 2026: 4 }; // season -> rounds
+// The dynasty demo uses REAL players and their real weekly PPR scores (nflverse data, packed into real.json):
+// a 12-team superflex league with no kickers or defenses, started with a 2016 startup draft.
+let REAL = null;
 function setMode(mode) {
   MODE = mode === 'dynasty' ? 'dynasty' : 'redraft';
-  SLOTS = MODE === 'dynasty' ? ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'SUPER_FLEX', 'K', 'DEF'] : ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'K', 'DEF'];
-  ROSTER_POSITIONS = SLOTS.concat(new Array(MODE === 'dynasty' ? 12 : 6).fill('BN'));
+  SLOTS = MODE === 'dynasty' ? ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'FLEX', 'SUPER_FLEX'] : ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'K', 'DEF'];
+  ROSTER_POSITIONS = SLOTS.concat(new Array(MODE === 'dynasty' ? 13 : 6).fill('BN'));
   ROUNDS = ROSTER_POSITIONS.length;
-  LEAGUE_NAME = MODE === 'dynasty' ? 'Demo Dynasty' : 'Demo League';
+  LEAGUE_NAME = MODE === 'dynasty' ? 'Demo Dynasty (real players)' : 'Demo League';
+  FIRST = MODE === 'dynasty' ? 2016 : 2017;
   REPL.QB = MODE === 'dynasty' ? 23 : 13;
+  REPL.RB = MODE === 'dynasty' ? 34 : 30;
+  REPL.WR = MODE === 'dynasty' ? 40 : 34;
 }
+
+// ---------- real players ----------
+// REAL.players[i] = [name, pos, birthYear, rookieSeason, draftRound, overallPick]
+// REAL.seasons[year][i] = [[week, ppr, cmp, att, passYd, passTd, int, car, rushYd, rushTd, rec, tgt, recYd, recTd, fumLost], …]
+const realRow = (season, pid, w) => { const L = REAL.seasons[String(season)] && REAL.seasons[String(season)][pid]; return L ? L.find(x => x[0] === w) : null; };
+const realPts = (season, pid, w) => { const r = realRow(season, pid, w); return r ? r[1] : 0; };
+function realSeasonPpg(season, pid) {
+  const L = REAL.seasons[String(season)] && REAL.seasons[String(season)][pid];
+  if (!L || L.length < 4) return null;
+  return L.reduce((t, x) => t + x[1], 0) / L.length;
+}
+// What managers expect from a player before the season: last year's points per game (blended with the year
+// before), or for a rookie, his NFL draft capital — the main thing real dynasty rookie rankings are built on.
+function realExpect(season, pid) {
+  const p = players[pid];
+  if (p.debut >= season) {
+    const base = { QB: 16, RB: 13.5, WR: 12.5, TE: 8 }[p.pos] || 7;
+    const pick = p.overall || 300;
+    return base * (0.22 + 1.0 * Math.exp(-pick / 75));
+  }
+  const a = realSeasonPpg(season - 1, pid); const b = realSeasonPpg(season - 2, pid);
+  if (a == null && b == null) return 3;
+  if (a == null) return b * 0.8;
+  if (b == null) return a;
+  return 0.7 * a + 0.3 * b;
+}
+function realLastSeason(pid) { let last = 0; Object.keys(REAL.seasons).forEach(y => { if (REAL.seasons[y][pid]) last = Math.max(last, Number(y)); }); return last; }
+
 
 // ---------- random numbers ----------
 function rng(seed) {
@@ -109,10 +143,16 @@ function simulateSeason(season, owners, isCurrent, carry) {
   const mgr = {}; rids.forEach(r => { mgr[r] = owners[r - 1]; });
 
   // Season form: true points per game, byes, injuries.
-  const active = Object.values(players).filter(p => p.retired == null);
+  const active = REAL ? Object.values(players).filter(p => p.debut <= season && (p.last >= season || p.debut === season)) : Object.values(players).filter(p => p.retired == null);
   const byeOf = {}; for (let t = 0; t < 32; t++) byeOf[t] = randint(5, 14);
   const form = {};
-  active.forEach(p => {
+  if (REAL) active.forEach(p => {
+    // Weeks he didn't play (injured, inactive, benched): known to the managers only for weeks already played.
+    const lastKnown = isCurrent ? LIVE_WEEK - 1 : LAST_WEEK;
+    const out = new Set(); for (let w = 1; w <= lastKnown; w++) if (!realRow(season, p.id, w)) out.add(w);
+    form[p.id] = { ppg: 0, sd: 0, out, bye: null, expect: realExpect(season, p.id) };
+  });
+  else active.forEach(p => {
     const c = POS_CFG[p.pos];
     const ppg = Math.max(0.5, p.talent * ageFactor(p, season) * (1 + 0.16 * normal()));
     const out = new Set();
@@ -125,6 +165,7 @@ function simulateSeason(season, owners, isCurrent, carry) {
   const weekPts = {}; // pid -> week -> pts
   const ptsFor = (pid, w) => {
     const f = form[pid]; if (!f) return 0;
+    if (REAL) return realPts(season, pid, w);
     const k = weekPts[pid] = weekPts[pid] || {};
     if (k[w] == null) {
       if (w === f.bye || f.out.has(w)) k[w] = 0;
@@ -142,24 +183,27 @@ function simulateSeason(season, owners, isCurrent, carry) {
     const xs = active.filter(p => p.pos === pos).map(p => form[p.id].expect).sort((a, b) => b - a);
     replLevel[pos] = xs[Math.min(xs.length - 1, REPL[pos] - 1)] || 0;
   });
-  const perceived = {};
+  const perceived = {}; const perceivedNow = {};
   const perceive = (r, pid) => {
     const key = r + ':' + pid;
     if (perceived[key] == null) {
       const p = players[pid]; const rookie = season - p.born <= 22;
-      const blur = (0.2 - 0.045 * mgr[r].skill) * (rookie ? (MODE === 'dynasty' ? 3.2 : 1.6) : 1);
+      const blur = (0.2 - 0.045 * mgr[r].skill) * (rookie ? (REAL ? 1.4 : MODE === 'dynasty' ? 3.2 : 1.6) : 1);
       let v = form[pid].expect * (1 + Math.max(0.05, blur) * normal());
+      perceivedNow[key] = v;
       // Dynasty managers pay for youth: future seasons count too.
-      if (MODE === 'dynasty' && p.pos !== 'K' && p.pos !== 'DEF') v *= clamp(1 + 0.06 * (POS_CFG[p.pos].peak[1] - (season - p.born)), 0.55, 1.45);
+      if (MODE === 'dynasty' && p.pos !== 'K' && p.pos !== 'DEF') v *= clamp(1 + (REAL ? 0.035 : 0.06) * (POS_CFG[p.pos].peak[1] - (season - p.born)), 0.55, REAL ? 1.3 : 1.45);
       perceived[key] = v;
     }
     return perceived[key];
   };
   const vor = (r, pid) => perceive(r, pid) - replLevel[players[pid].pos];
+  // This week's lineup only cares about this season, not about youth.
+  const perceiveNow = (r, pid) => { perceive(r, pid); return perceivedNow[r + ':' + pid]; };
 
   // Drafts. Redraft and the dynasty's first season: one full snake draft. Dynasty after that: rosters carry
   // over, then a linear rookie draft (worst team picks first) and, some years, a supplemental draft.
-  const roster = {}; rids.forEach(r => { roster[r] = carry && carry.roster[r] ? carry.roster[r].filter(pid => players[pid] && players[pid].retired == null) : []; });
+  const roster = {}; rids.forEach(r => { roster[r] = carry && carry.roster[r] ? carry.roster[r].filter(pid => players[pid] && players[pid].retired == null && form[pid]) : []; });
   const taken = new Set([].concat.apply([], rids.map(r => roster[r])));
   const drafts = [];
   const pickMeta = p => ({ yearsExp: Math.max(0, season - p.debut) });
@@ -242,7 +286,7 @@ function simulateSeason(season, owners, isCurrent, carry) {
     if (w === f.bye) return -50;
     if (f.out.has(w) && rand() < 0.88 + 0.06 * mgr[r].skill) return -50;
     const recent = recentAvg(pid, w);
-    const base = recent == null ? perceive(r, pid) : 0.55 * perceive(r, pid) + 0.45 * recent;
+    const base = recent == null ? perceiveNow(r, pid) : 0.55 * perceiveNow(r, pid) + 0.45 * recent;
     return base * (1 + (0.22 - 0.05 * mgr[r].skill) * normal());
   };
   function setLineup(r, w) {
@@ -253,7 +297,7 @@ function simulateSeason(season, owners, isCurrent, carry) {
     const chosen = new Array(SLOTS.length).fill('0');
     fillOrder.forEach(({ s, i }) => {
       const pool = roster[r].filter(pid => !used.has(pid) && ELIG[s].indexOf(players[pid].pos) >= 0)
-        .sort((a, b) => (lazy ? perceive(r, b) - perceive(r, a) : proj[b] - proj[a]));
+        .sort((a, b) => (lazy ? perceiveNow(r, b) - perceiveNow(r, a) : proj[b] - proj[a]));
       if (pool.length) { chosen[i] = pool[0]; used.add(pool[0]); }
     });
     starters.push.apply(starters, chosen);
@@ -318,7 +362,10 @@ function simulateSeason(season, owners, isCurrent, carry) {
   for (let w = 1; w <= regWeeks; w++) schedule[w - 1].forEach(([a, b], i) => { entry(w, a).matchup_id = i + 1; entry(w, b).matchup_id = i + 1; });
 
   // Live week: games still being played.
-  if (isCurrent) {
+  if (isCurrent && REAL) {
+    // Real data: the live week holds whatever games have been played so far.
+    byWeek[LIVE_WEEK - 1].forEach(m => { m._full = { ...m.players_points }; m._slot = {}; Object.keys(m._full).forEach(pid => { m._slot[pid] = 0; }); });
+  } else if (isCurrent) {
     const slot = {}; for (let t = 0; t < 32; t++) slot[t] = rand();
     byWeek[LIVE_WEEK - 1].forEach(m => {
       Object.keys(m.players_points).forEach(pid => {
@@ -415,11 +462,17 @@ function offseason(season) {
 }
 
 let built = null;
-function build(seed, mode) {
+function build(seed, mode, real) {
   setMode(mode);
   R = rng(seed + (MODE === 'dynasty' ? 7919 : 0));
   players = {}; nextId = 1000; usedNames.clear();
-  Object.keys(POS_CFG).forEach(pos => {
+  REAL = MODE === 'dynasty' ? real : null;
+  if (REAL) REAL.players.forEach((x, i) => {
+    const id = String(i);
+    players[id] = { id, name: x[0], pos: x[1], born: x[2], debut: x[3], rnd: x[4], overall: x[5], team: 0, retired: null, talent: 0 };
+  });
+  if (REAL) Object.values(players).forEach(p => { p.last = realLastSeason(p.id); });
+  else Object.keys(POS_CFG).forEach(pos => {
     if (pos === 'DEF') { for (let t = 0; t < 32; t++) players['DEF' + t] = { id: 'DEF' + t, pos: 'DEF', name: CITIES[t] + ' ' + MASCOTS[t], talent: talentFor('DEF'), born: 0, team: t, retired: null }; return; }
     for (let i = 0; i < POS_CFG[pos].n; i++) newPlayer(pos, FIRST, false);
   });
@@ -430,7 +483,7 @@ function build(seed, mode) {
   const changes = { 2020: 1, 2022: 1, 2024: 1 };
   const seasons = []; let live = null; let carry = null;
   for (let y = FIRST; y <= CURRENT; y++) {
-    if (y > FIRST) offseason(y);
+    if (y > FIRST && !REAL) offseason(y);
     if (changes[y]) for (let k = 0; k < changes[y]; k++) {
       // The manager with the worst skill is the likeliest to quit.
       const idx = owners.map((o, i) => ({ i, s: o.skill + normal() })).sort((a, b) => a.s - b.s)[0].i;
@@ -441,6 +494,7 @@ function build(seed, mode) {
     if (MODE === 'dynasty') carry = out.carry;
     seasons.push(out.raw);
     if (out.live) live = out.live;
+    if (REAL) owners.forEach(o => { o.teamName = o.teamName; });
   }
   const names = {};
   Object.values(players).forEach(p => { names[p.id] = [p.name, p.pos]; });
@@ -457,7 +511,12 @@ export function clearSavedSeasons() { /* nothing is saved in the demo */ }
 export async function loadAll(league, onProgress) {
   onProgress && onProgress('Simulating ten seasons…');
   await new Promise(r => setTimeout(r, 0));
-  built = build(seedFromUrl(), league && league.format);
+  let real = null;
+  if (league && league.format === 'dynasty') {
+    onProgress && onProgress('Loading real player stats…');
+    real = await (await fetch('real.json?v=1')).json();
+  }
+  built = build(seedFromUrl(), league && league.format, real);
   built.startedAt = Date.now();
   return { state: { season: String(CURRENT), week: LIVE_WEEK }, seasons: built.seasons, players: built.players };
 }
@@ -477,7 +536,7 @@ export async function loadLiveWeek() {
   });
 }
 
-export async function leagueInfo(id) { const dyn = id === 'dynasty'; return { id: dyn ? 'dynasty' : 'demo', name: dyn ? 'Demo Dynasty' : 'Demo League', season: String(CURRENT), format: dyn ? 'dynasty' : 'redraft' }; }
+export async function leagueInfo(id) { const dyn = id === 'dynasty'; return { id: dyn ? 'dynasty' : 'demo', name: dyn ? 'Demo Dynasty (real players)' : 'Demo League', season: String(CURRENT), format: dyn ? 'dynasty' : 'redraft' }; }
 export async function lookupUser() { return null; }
 export async function nflState() { return { season: String(CURRENT), week: LIVE_WEEK }; }
 export async function userLeagues() { return []; }
@@ -524,6 +583,15 @@ export async function loadWeekStats(season, week, live) {
   if (live) (await loadLiveWeek()).forEach(m => Object.assign(pts, m.players_points));
   else { const raw = built.seasons.find(x => x.season === String(season)); ((raw && raw.matchups[week - 1]) || []).forEach(m => Object.assign(pts, m.players_points)); }
   const seed = seedFromUrl(); const out = {};
+  if (REAL) {
+    // Real box scores.
+    Object.keys(pts).forEach(pid => {
+      const r = realRow(season, pid, week); if (!r) return;
+      const [, , cmp, att, py, ptd, int, car, ry, rtd, rec, tgt, recy, rectd, fl] = r;
+      out[pid] = { pass_cmp: cmp, pass_att: att, pass_yd: py, pass_td: ptd, pass_int: int, rush_att: car, rush_yd: ry, rush_td: rtd, rec, rec_tgt: tgt, rec_yd: recy, rec_td: rectd, fum_lost: fl };
+    });
+    return out;
+  }
   Object.keys(pts).forEach(pid => {
     const pos = built.players[pid] ? built.players[pid][1] : '';
     const st = fakeStats(pos, pts[pid], rng(hashSeed(seed + ':' + season + ':' + week + ':' + pid)));
