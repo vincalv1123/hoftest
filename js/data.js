@@ -73,7 +73,7 @@ function newPlayer(pos, season, rookie) {
   const id = String(nextId++);
   const age = rookie ? randint(21, 23) : randint(21, 32);
   const p = { id, pos, name: personName(), talent: talentFor(pos), born: season - age, team: randint(0, 31), retired: null, debut: rookie ? season : season - Math.max(0, age - 22) };
-  if (rookie) p.talent *= 0.85 + rand() * 0.45; // rookies are a lottery
+  if (rookie) p.talent *= MODE === 'dynasty' ? 0.3 + Math.pow(rand(), 1.9) * 1.05 : 0.85 + rand() * 0.45; // rookies are a lottery (more busts in dynasty classes)
   players[id] = p;
   return p;
 }
@@ -147,7 +147,7 @@ function simulateSeason(season, owners, isCurrent, carry) {
     const key = r + ':' + pid;
     if (perceived[key] == null) {
       const p = players[pid]; const rookie = season - p.born <= 22;
-      const blur = (0.2 - 0.045 * mgr[r].skill) * (rookie ? 1.6 : 1);
+      const blur = (0.2 - 0.045 * mgr[r].skill) * (rookie ? (MODE === 'dynasty' ? 3.2 : 1.6) : 1);
       let v = form[pid].expect * (1 + Math.max(0.05, blur) * normal());
       // Dynasty managers pay for youth: future seasons count too.
       if (MODE === 'dynasty' && p.pos !== 'K' && p.pos !== 'DEF') v *= clamp(1 + 0.06 * (POS_CFG[p.pos].peak[1] - (season - p.born)), 0.55, 1.45);
