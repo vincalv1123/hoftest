@@ -339,7 +339,31 @@ function simulateSeason(season, owners, isCurrent, carry) {
       if (w >= 3 && w <= 11 && rand() < 0.62) {
         const [a, b] = shuffle(rids).slice(0, 2);
         const offer = roster[a].filter(pid => players[pid].pos !== 'K' && players[pid].pos !== 'DEF').sort(() => rand() - 0.5);
-        for (const pa of offer.slice(0, 6)) {
+        // Redraft: some trades are 2-for-1s. Team a sends two players for one better one; team b, getting the extra
+        // body, values depth a little more than it should and drops its weakest bench player to make room.
+        let done = false;
+        if (MODE === 'redraft' && rand() < 0.4) {
+          let two = null; let star = null;
+          const cands = offer.slice(0, 6);
+          for (let i = 0; i < cands.length && !star; i++) for (let j = i + 1; j < cands.length && !star; j++) {
+            const pair = [cands[i], cands[j]];
+            const tv = perceive(b, pair[0]) + perceive(b, pair[1]);
+            const top = Math.max(perceive(a, pair[0]), perceive(a, pair[1]));
+            const s2 = roster[b].find(pb => players[pb].pos !== 'K' && players[pb].pos !== 'DEF' && perceive(b, pb) > tv * 0.5 && perceive(b, pb) < tv * 0.95 && perceive(a, pb) > top * 1.05);
+            if (s2) { two = pair; star = s2; }
+          }
+          if (star) {
+            const cut = roster[b].filter(pid => pid !== star && players[pid].pos !== 'K' && players[pid].pos !== 'DEF')
+              .sort((x, y) => perceive(b, x) - perceive(b, y))[0];
+            roster[a] = roster[a].filter(x => two.indexOf(x) < 0).concat([star]);
+            roster[b] = roster[b].filter(x => x !== star && x !== cut).concat(two);
+            const drops = { [two[0]]: a, [two[1]]: a, [star]: b };
+            if (cut) drops[cut] = b;
+            transactions.push({ type: 'trade', leg: w, adds: { [star]: a, [two[0]]: b, [two[1]]: b }, drops, roster_ids: [a, b], bid: null, created: baseTime + w * 7 * 864e5 - 3 * 864e5 + randint(0, 864e5), picks: [] });
+            done = true;
+          }
+        }
+        if (!done) for (const pa of offer.slice(0, 6)) {
           const va = perceive(a, pa);
           const back = roster[b].find(pb => players[pb].pos !== 'K' && players[pb].pos !== 'DEF' && Math.abs(perceive(b, pb) - va) < va * 0.22 && perceive(a, pb) > va * 0.95);
           if (back) {
