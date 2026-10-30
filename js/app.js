@@ -2,10 +2,10 @@
 // The league comes from the address (?league=<id>&u=<username>); without one, the start screen shows.
 // Routes: #all, #search, #drafts[@season], #awards, #s<season>, #m-<managerId>[@season], #vs-<id>~<id>.
 
-import { CONFIG } from './config.js?v=202610300458';
-import { loadAll, loadLiveWeek, loadWeekStats, lookupUser, nflState, userLeagues, leagueInfo, clearSavedSeasons } from './data.js?v=202610300458';
-import { buildModel, optimalPoints } from './model.js?v=202610300458';
-import { parse as parseQuery, answer as answerQuery, EXAMPLES, HELP, examplesFor } from './search.js?v=202610300458';
+import { CONFIG } from './config.js?v=202610300523';
+import { loadAll, loadLiveWeek, loadWeekStats, lookupUser, nflState, userLeagues, leagueInfo, clearSavedSeasons } from './data.js?v=202610300523';
+import { buildModel, optimalPoints } from './model.js?v=202610300523';
+import { parse as parseQuery, answer as answerQuery, EXAMPLES, HELP, examplesFor } from './search.js?v=202610300523';
 
 const $app = document.getElementById('app');
 const $tabs = document.getElementById('tabs');
@@ -1710,8 +1710,10 @@ async function start() {
     M.league = LG;
     LG.name = (data.seasons[0] && data.seasons[0].name) || info.name;
     document.getElementById('meta').textContent = describe(M, LG);
-    $leagues.className = 'league-bar';
-    $leagues.innerHTML = `<span class="league-name">${esc(LG.name)}</span><span class="note">Simulated · random stats</span>`;
+    // Two demo leagues side by side, same seed.
+    const linkFor = lgId => { const u = new URL(location.href); u.searchParams.set('league', lgId); u.hash = '#all'; return u.pathname + u.search + u.hash; };
+    $leagues.className = 'leagues';
+    $leagues.innerHTML = `<a class="seg${LG.format !== 'dynasty' ? ' on' : ''}" href="${linkFor('demo')}">Redraft</a><a class="seg${LG.format === 'dynasty' ? ' on' : ''}" href="${linkFor('dynasty')}">Dynasty</a>`;
     window.addEventListener('hashchange', render);
     render();
     setRefresh('idle');

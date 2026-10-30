@@ -1,4 +1,4 @@
-// Demo data: a made-up 12-team redraft league that has run for ten seasons (2017–2026).
+// Demo data: two made-up 12-team leagues (redraft and superflex dynasty) that have run for ten seasons (2017–2026).
 // Nothing here talks to Sleeper. It builds the same shapes the real site loads, so every page works the same.
 // The same seed always makes the same league; ?seed=<number> makes a different one.
 
@@ -8,11 +8,24 @@ const LIVE_WEEK = 8;            // week being played "right now" in the current 
 const TEAMS = 12;
 const PSTART = 15;              // playoffs weeks 15–17
 const LAST_WEEK = PSTART + 2;
-const SLOTS = ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'K', 'DEF'];
-const ROSTER_POSITIONS = SLOTS.concat(['BN', 'BN', 'BN', 'BN', 'BN', 'BN']);
-const ROUNDS = ROSTER_POSITIONS.length;
-const ELIG = { QB: ['QB'], RB: ['RB'], WR: ['WR'], TE: ['TE'], K: ['K'], DEF: ['DEF'], FLEX: ['RB', 'WR', 'TE'] };
-const LEAGUE_NAME = 'Demo League';
+// Two demo leagues: a redraft league (new draft every year) and a superflex dynasty league
+// (startup draft in year one, then rookie drafts, plus a few supplemental drafts to fill rosters).
+let MODE = 'redraft';
+let SLOTS = ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'K', 'DEF'];
+let ROSTER_POSITIONS = SLOTS.concat(['BN', 'BN', 'BN', 'BN', 'BN', 'BN']);
+let ROUNDS = ROSTER_POSITIONS.length;
+const ELIG = { QB: ['QB'], RB: ['RB'], WR: ['WR'], TE: ['TE'], K: ['K'], DEF: ['DEF'], FLEX: ['RB', 'WR', 'TE'], SUPER_FLEX: ['QB', 'RB', 'WR', 'TE'] };
+let LEAGUE_NAME = 'Demo League';
+const ROOKIE_ROUNDS = 3;
+const SUPPLEMENTAL_YEARS = { 2020: 3, 2023: 3, 2026: 4 }; // season -> rounds
+function setMode(mode) {
+  MODE = mode === 'dynasty' ? 'dynasty' : 'redraft';
+  SLOTS = MODE === 'dynasty' ? ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'SUPER_FLEX', 'K', 'DEF'] : ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'K', 'DEF'];
+  ROSTER_POSITIONS = SLOTS.concat(new Array(MODE === 'dynasty' ? 12 : 6).fill('BN'));
+  ROUNDS = ROSTER_POSITIONS.length;
+  LEAGUE_NAME = MODE === 'dynasty' ? 'Demo Dynasty' : 'Demo League';
+  REPL.QB = MODE === 'dynasty' ? 23 : 13;
+}
 
 // ---------- random numbers ----------
 function rng(seed) {
@@ -45,7 +58,7 @@ const POS_CFG = {
   K: { n: 32, top: 9.5, low: 6.5, sd: 0.42, peak: [24, 38], exit: 41 },
   DEF: { n: 32, top: 9.5, low: 4.5, sd: 0.7, peak: [0, 99], exit: 999 }
 };
-const REPL = { QB: 13, RB: 30, WR: 34, TE: 13, K: 12, DEF: 12 };
+const REPL = { QB: 13, RB: 30, WR: 34, TE: 13, K: 12, DEF: 12 }; // QB moves deeper in superflex (setMode)
 
 let players = {};       // id -> { id, name, pos, talent, born, team, retired }
 let nextId = 1000;
@@ -59,7 +72,7 @@ function talentFor(pos) { const c = POS_CFG[pos]; return c.low + (c.top - c.low)
 function newPlayer(pos, season, rookie) {
   const id = String(nextId++);
   const age = rookie ? randint(21, 23) : randint(21, 32);
-  const p = { id, pos, name: personName(), talent: talentFor(pos), born: season - age, team: randint(0, 31), retired: null };
+  const p = { id, pos, name: personName(), talent: talentFor(pos), born: season - age, team: randint(0, 31), retired: null, debut: rookie ? season : season - Math.max(0, age - 22) };
   if (rookie) p.talent *= 0.85 + rand() * 0.45; // rookies are a lottery
   players[id] = p;
   return p;
@@ -90,7 +103,7 @@ function roundRobin(ids) {
 }
 
 // ---------- one season ----------
-function simulateSeason(season, owners, isCurrent) {
+function simulateSeason(season, owners, isCurrent, carry) {
   const leagueId = 'demo-' + season;
   const rids = owners.map((_, i) => i + 1);
   const mgr = {}; rids.forEach(r => { mgr[r] = owners[r - 1]; });
@@ -135,43 +148,84 @@ function simulateSeason(season, owners, isCurrent) {
     if (perceived[key] == null) {
       const p = players[pid]; const rookie = season - p.born <= 22;
       const blur = (0.2 - 0.045 * mgr[r].skill) * (rookie ? 1.6 : 1);
-      perceived[key] = form[pid].expect * (1 + Math.max(0.05, blur) * normal());
+      let v = form[pid].expect * (1 + Math.max(0.05, blur) * normal());
+      // Dynasty managers pay for youth: future seasons count too.
+      if (MODE === 'dynasty' && p.pos !== 'K' && p.pos !== 'DEF') v *= clamp(1 + 0.06 * (POS_CFG[p.pos].peak[1] - (season - p.born)), 0.55, 1.45);
+      perceived[key] = v;
     }
     return perceived[key];
   };
   const vor = (r, pid) => perceive(r, pid) - replLevel[players[pid].pos];
 
-  // Draft (snake).
-  const order = shuffle(rids);
-  const roster = {}; rids.forEach(r => { roster[r] = []; });
-  const taken = new Set();
-  const picks = [];
-  const caps = { QB: 2, RB: 6, WR: 7, TE: 2, K: 1, DEF: 1 };
-  let pickNo = 0;
-  for (let rd = 1; rd <= ROUNDS; rd++) {
-    const seq = rd % 2 ? order : order.slice().reverse();
-    seq.forEach(r => {
-      pickNo++;
-      const have = {}; roster[r].forEach(pid => { const ps = players[pid].pos; have[ps] = (have[ps] || 0) + 1; });
-      const left = ROUNDS - rd;
-      let best = null; let bestV = -1e9;
-      active.forEach(p => {
-        if (taken.has(p.id)) return;
-        const n = have[p.pos] || 0;
-        if (n >= caps[p.pos]) return;
-        if ((p.pos === 'K' || p.pos === 'DEF') && rd < ROUNDS - 3 && left > 1) return;
-        let v = vor(r, p.id);
-        if ((p.pos === 'K' || p.pos === 'DEF') && !n && left <= 1) v += 100;
-        if (p.pos === 'QB' && n >= 1) v -= 4;
-        if (p.pos === 'TE' && n >= 1) v -= 4;
-        if ((p.pos === 'QB' || p.pos === 'TE') && !n && rd >= 8) v += 3;
-        if (v > bestV) { bestV = v; best = p; }
+  // Drafts. Redraft and the dynasty's first season: one full snake draft. Dynasty after that: rosters carry
+  // over, then a linear rookie draft (worst team picks first) and, some years, a supplemental draft.
+  const roster = {}; rids.forEach(r => { roster[r] = carry && carry.roster[r] ? carry.roster[r].filter(pid => players[pid] && players[pid].retired == null) : []; });
+  const taken = new Set([].concat.apply([], rids.map(r => roster[r])));
+  const drafts = [];
+  const pickMeta = p => ({ yearsExp: Math.max(0, season - p.debut) });
+  const caps = MODE === 'dynasty' ? { QB: 4, RB: 8, WR: 9, TE: 3, K: 1, DEF: 1 } : { QB: 2, RB: 6, WR: 7, TE: 2, K: 1, DEF: 1 };
+  function runDraft(kind, rounds, order, snake, pool, startDay) {
+    const picks = []; let pickNo = 0;
+    for (let rd = 1; rd <= rounds; rd++) {
+      const seq = snake && rd % 2 === 0 ? order.slice().reverse() : order;
+      seq.forEach(r => {
+        pickNo++;
+        const have = {}; roster[r].forEach(pid => { const ps = players[pid].pos; have[ps] = (have[ps] || 0) + 1; });
+        const left = rounds - rd;
+        let best = null; let bestV = -1e9;
+        pool.forEach(p => {
+          if (taken.has(p.id)) return;
+          const n = have[p.pos] || 0;
+          if (kind !== 'rookie' && n >= caps[p.pos]) return;
+          if (kind === 'main' || kind === 'startup') {
+            if ((p.pos === 'K' || p.pos === 'DEF') && rd < rounds - 3 && left > 1) return;
+          } else if (p.pos === 'K' || p.pos === 'DEF') return;
+          let v = vor(r, p.id);
+          if ((p.pos === 'K' || p.pos === 'DEF') && !n && left <= 1) v += 100;
+          if (p.pos === 'QB' && n >= (MODE === 'dynasty' ? 2 : 1)) v -= 4;
+          if (p.pos === 'TE' && n >= 1) v -= 4;
+          if ((p.pos === 'QB' || p.pos === 'TE') && !n && rd >= 8) v += 3;
+          if (v > bestV) { bestV = v; best = p; }
+        });
+        if (!best) return;
+        taken.add(best.id);
+        roster[r].push(best.id);
+        picks.push({ round: rd, pick_no: pickNo, player_id: best.id, roster_id: r, picked_by: mgr[r].id, pos: best.pos, ...pickMeta(best) });
       });
-      taken.add(best.id);
-      roster[r].push(best.id);
-      picks.push({ round: rd, pick_no: pickNo, player_id: best.id, roster_id: r, picked_by: mgr[r].id, pos: best.pos });
-    });
+    }
+    const rookies = picks.filter(p => p.yearsExp === 0).length;
+    drafts.push({ draftId: 'demo-' + MODE + '-' + season + '-' + kind, type: snake ? 'snake' : 'linear', rounds, start: Date.UTC(season, 3, startDay),
+      main: kind !== 'rookie', rookieShare: picks.length ? rookies / picks.length : 0, picks });
   }
+  if (!carry) {
+    runDraft(MODE === 'dynasty' ? 'startup' : 'main', ROUNDS, shuffle(rids), true, active, 20);
+  } else {
+    const rookiesPool = active.filter(p => p.debut === season && p.pos !== 'K' && p.pos !== 'DEF');
+    runDraft('rookie', ROOKIE_ROUNDS, carry.order, false, rookiesPool, 25);
+    // Cut down to the roster limit (keep a kicker and a defense). In a supplemental year, teams cut deeper first
+    // and refill their rosters from the leftover veterans.
+    const supp = SUPPLEMENTAL_YEARS[season] || 0;
+    const trimTo = limit => rids.forEach(r => {
+      while (roster[r].length > limit) {
+        const cut = roster[r].filter(pid => { const ps = players[pid].pos; return ps !== 'K' && ps !== 'DEF' && roster[r].filter(q => players[q].pos === ps).length > (ps === 'TE' ? 1 : 2); })
+          .sort((a, b) => perceive(r, a) - perceive(r, b))[0];
+        if (!cut) break;
+        roster[r] = roster[r].filter(x => x !== cut); taken.delete(cut);
+      }
+    });
+    if (supp) { trimTo(ROUNDS - supp); Object.keys(caps).forEach(k => { caps[k] = 99; }); runDraft('supplemental', supp, carry.order, true, active.filter(p => p.debut < season), 39); }
+    rids.forEach(r => {
+      ['K', 'DEF'].forEach(pos => {
+        if (!roster[r].some(pid => players[pid].pos === pos)) {
+          const fa = active.filter(p => p.pos === pos && !taken.has(p.id)).sort((a, b) => form[b.id].expect - form[a.id].expect)[0];
+          if (fa) { taken.add(fa.id); roster[r].push(fa.id); }
+        }
+      });
+    });
+    trimTo(ROUNDS);
+  }
+  const primaryDraft = drafts.find(x => x.rookieShare >= 0.8) || drafts[0];
+  const picks = primaryDraft ? primaryDraft.picks : [];
 
   // Weekly lineups, scores, waivers and trades.
   const scheduleRR = roundRobin(shuffle(rids));
@@ -311,18 +365,27 @@ function simulateSeason(season, owners, isCurrent) {
     for (let w = LIVE_WEEK; w <= regWeeks; w++) schedule[w - 1].forEach(([a, b], i) => { entry(w, a).matchup_id = i + 1; entry(w, b).matchup_id = i + 1; });
   }
 
+  function standingsWorstFirst() {
+    const st = {}; rids.forEach(r => { st[r] = { w: 0, pf: 0 }; });
+    for (let w = 1; w <= Math.min(regWeeks, scoredThrough); w++) schedule[w - 1].forEach(([a, b]) => {
+      const pa = entry(w, a).points; const pb = entry(w, b).points; st[a].pf += pa; st[b].pf += pb;
+      if (pa > pb) st[a].w++; else if (pb > pa) st[b].w++; });
+    return rids.slice().sort((a, b) => st[a].w - st[b].w || st[a].pf - st[b].pf);
+  }
   const users = rids.map(r => ({ user_id: mgr[r].id, display_name: mgr[r].name, team_name: mgr[r].teamName, avatar: null }));
   return {
     raw: {
-      leagueId, season: String(season), name: LEAGUE_NAME, status: isCurrent ? 'in_season' : 'complete', totalRosters: TEAMS,
+      leagueId: MODE + '-' + season, season: String(season), name: LEAGUE_NAME, status: isCurrent ? 'in_season' : 'complete', totalRosters: TEAMS,
       rosterPositions: ROSTER_POSITIONS, playoffWeekStart: PSTART, playoffTeams: 6, waiverType: 2, waiverBudget: 100,
       scoredThrough, currentWeek: isCurrent ? LIVE_WEEK : null, users,
       rosters: rids.map(r => ({ roster_id: r, owner_id: mgr[r].id, taxi: [], reserve: [] })),
-      winners, losers, picks,
+      winners, losers, picks, drafts,
       matchups: byWeek.map(list => list.map(m => ({ roster_id: m.roster_id, matchup_id: m.matchup_id, points: m.points, starters: m.starters, players: m.players, players_points: m.players_points }))),
       transactions: transactions.sort((a, b) => a.created - b.created)
     },
-    live: isCurrent ? byWeek[LIVE_WEEK - 1] : null
+    live: isCurrent ? byWeek[LIVE_WEEK - 1] : null,
+    // Dynasty: rosters carry over; next year's rookie draft goes worst team first.
+    carry: { roster: Object.fromEntries(rids.map(r => [r, roster[r].slice()])), order: standingsWorstFirst() }
   };
 }
 
@@ -343,11 +406,18 @@ function offseason(season) {
     const have = Object.values(players).filter(p => p.pos === pos && p.retired == null).length;
     for (let i = have; i < POS_CFG[pos].n; i++) newPlayer(pos, season, true);
   });
+  // Dynasty needs a full rookie class every year for its rookie draft.
+  if (MODE === 'dynasty') {
+    const share = { QB: 0.14, RB: 0.3, WR: 0.4, TE: 0.16 };
+    let n = Object.values(players).filter(p => p.debut === season && p.pos !== 'K' && p.pos !== 'DEF').length;
+    while (n < 44) { const x = rand(); const pos = x < share.QB ? 'QB' : x < share.QB + share.RB ? 'RB' : x < 0.84 ? 'WR' : 'TE'; newPlayer(pos, season, true); n++; }
+  }
 }
 
 let built = null;
-function build(seed) {
-  R = rng(seed);
+function build(seed, mode) {
+  setMode(mode);
+  R = rng(seed + (MODE === 'dynasty' ? 7919 : 0));
   players = {}; nextId = 1000; usedNames.clear();
   Object.keys(POS_CFG).forEach(pos => {
     if (pos === 'DEF') { for (let t = 0; t < 32; t++) players['DEF' + t] = { id: 'DEF' + t, pos: 'DEF', name: CITIES[t] + ' ' + MASCOTS[t], talent: talentFor('DEF'), born: 0, team: t, retired: null }; return; }
@@ -358,7 +428,7 @@ function build(seed) {
   const owners = pool.slice(0, TEAMS);
   const bench = pool.slice(TEAMS);
   const changes = { 2020: 1, 2022: 1, 2024: 1 };
-  const seasons = []; let live = null;
+  const seasons = []; let live = null; let carry = null;
   for (let y = FIRST; y <= CURRENT; y++) {
     if (y > FIRST) offseason(y);
     if (changes[y]) for (let k = 0; k < changes[y]; k++) {
@@ -367,7 +437,8 @@ function build(seed) {
       owners[idx] = bench.shift();
     }
     owners.forEach(o => { if (rand() < 0.35) o.teamName = pick(TEAM_NAMES); });
-    const out = simulateSeason(y, owners, y === CURRENT);
+    const out = simulateSeason(y, owners, y === CURRENT, carry);
+    if (MODE === 'dynasty') carry = out.carry;
     seasons.push(out.raw);
     if (out.live) live = out.live;
   }
@@ -386,7 +457,7 @@ export function clearSavedSeasons() { /* nothing is saved in the demo */ }
 export async function loadAll(league, onProgress) {
   onProgress && onProgress('Simulating ten seasons…');
   await new Promise(r => setTimeout(r, 0));
-  built = build(seedFromUrl());
+  built = build(seedFromUrl(), league && league.format);
   built.startedAt = Date.now();
   return { state: { season: String(CURRENT), week: LIVE_WEEK }, seasons: built.seasons, players: built.players };
 }
@@ -406,7 +477,7 @@ export async function loadLiveWeek() {
   });
 }
 
-export async function leagueInfo() { return { id: 'demo', name: LEAGUE_NAME, season: String(CURRENT), format: 'redraft' }; }
+export async function leagueInfo(id) { const dyn = id === 'dynasty'; return { id: dyn ? 'dynasty' : 'demo', name: dyn ? 'Demo Dynasty' : 'Demo League', season: String(CURRENT), format: dyn ? 'dynasty' : 'redraft' }; }
 export async function lookupUser() { return null; }
 export async function nflState() { return { season: String(CURRENT), week: LIVE_WEEK }; }
 export async function userLeagues() { return []; }
