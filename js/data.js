@@ -21,6 +21,9 @@ const SUPPLEMENTAL_YEARS = { 2020: 3, 2023: 3, 2026: 4 }; // season -> rounds
 // The dynasty demo uses REAL players and their real weekly PPR scores (nflverse data, packed into real.json):
 // a 12-team superflex league with no kickers or defenses, started with a 2016 startup draft.
 let REAL = null;
+// Redraft: who owns each future draft pick, by season -> round -> original roster id. Trades move them.
+let PICK_OWNER = {};
+const pickOwner = (season, round, orig) => ((PICK_OWNER[season] || {})[round] || {})[orig] || orig;
 function setMode(mode) {
   MODE = mode === 'dynasty' ? 'dynasty' : 'redraft';
   SLOTS = MODE === 'dynasty' ? ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'FLEX', 'SUPER_FLEX'] : ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'K', 'DEF'];
@@ -212,8 +215,10 @@ function simulateSeason(season, owners, isCurrent, carry) {
     const picks = []; let pickNo = 0;
     for (let rd = 1; rd <= rounds; rd++) {
       const seq = snake && rd % 2 === 0 ? order.slice().reverse() : order;
-      seq.forEach(r => {
+      seq.forEach(orig => {
         pickNo++;
+        // A traded pick is made by its new owner, in the original team's slot.
+        const r = kind === 'main' && MODE === 'redraft' ? pickOwner(season, rd, orig) : orig;
         const have = {}; roster[r].forEach(pid => { const ps = players[pid].pos; have[ps] = (have[ps] || 0) + 1; });
         const left = rounds - rd;
         let best = null; let bestV = -1e9;
@@ -234,12 +239,13 @@ function simulateSeason(season, owners, isCurrent, carry) {
         if (!best) return;
         taken.add(best.id);
         roster[r].push(best.id);
-        picks.push({ round: rd, pick_no: pickNo, player_id: best.id, roster_id: r, picked_by: mgr[r].id, pos: best.pos, ...pickMeta(best) });
+        picks.push({ round: rd, pick_no: pickNo, draft_slot: order.indexOf(orig) + 1, player_id: best.id, roster_id: r, picked_by: mgr[r].id, pos: best.pos, ...pickMeta(best) });
       });
     }
     const rookies = picks.filter(p => p.yearsExp === 0).length;
     drafts.push({ draftId: 'demo-' + MODE + '-' + season + '-' + kind, type: snake ? 'snake' : 'linear', rounds, start: Date.UTC(season, 3, startDay),
-      main: kind !== 'rookie', rookieShare: picks.length ? rookies / picks.length : 0, picks });
+      main: kind !== 'rookie', rookieShare: picks.length ? rookies / picks.length : 0, picks,
+      slotToRoster: Object.fromEntries(order.map((r, i) => [i + 1, r])) });
   }
   if (!carry) {
     runDraft(MODE === 'dynasty' ? 'startup' : 'main', ROUNDS, shuffle(rids), true, active, 20);
@@ -270,6 +276,7 @@ function simulateSeason(season, owners, isCurrent, carry) {
   }
   const primaryDraft = drafts.find(x => x.rookieShare >= 0.8) || drafts[0];
   const picks = primaryDraft ? primaryDraft.picks : [];
+  const slotToRoster = primaryDraft ? primaryDraft.slotToRoster : null;
 
   // Weekly lineups, scores, waivers and trades.
   const scheduleRR = roundRobin(shuffle(rids));
@@ -318,7 +325,17 @@ function simulateSeason(season, owners, isCurrent, carry) {
           if (back) {
             roster[a] = roster[a].filter(x => x !== pa).concat([back]);
             roster[b] = roster[b].filter(x => x !== back).concat([pa]);
-            transactions.push({ type: 'trade', leg: w, adds: { [back]: a, [pa]: b }, drops: { [pa]: a, [back]: b }, roster_ids: [a, b], bid: null, created: baseTime + w * 7 * 864e5 - 3 * 864e5 + randint(0, 864e5), picks: [] });
+            // Redraft: some trades add one of next year's draft picks as a sweetener.
+            const tp = [];
+            if (MODE === 'redraft' && rand() < 0.4) {
+              const giver = rand() < 0.5 ? a : b; const taker = giver === a ? b : a;
+              const rd = randint(1, 8); const next = season + 1;
+              if (pickOwner(next, rd, giver) === giver) {
+                ((PICK_OWNER[next] = PICK_OWNER[next] || {})[rd] = PICK_OWNER[next][rd] || {})[giver] = taker;
+                tp.push({ season: String(next), round: rd, from: giver, to: taker, orig: giver });
+              }
+            }
+            transactions.push({ type: 'trade', leg: w, adds: { [back]: a, [pa]: b }, drops: { [pa]: a, [back]: b }, roster_ids: [a, b], bid: null, created: baseTime + w * 7 * 864e5 - 3 * 864e5 + randint(0, 864e5), picks: tp });
             break;
           }
         }
@@ -426,7 +443,7 @@ function simulateSeason(season, owners, isCurrent, carry) {
       rosterPositions: ROSTER_POSITIONS, playoffWeekStart: PSTART, playoffTeams: 6, waiverType: 2, waiverBudget: 100,
       scoredThrough, currentWeek: isCurrent ? LIVE_WEEK : null, users,
       rosters: rids.map(r => ({ roster_id: r, owner_id: mgr[r].id, taxi: [], reserve: [] })),
-      winners, losers, picks, drafts,
+      winners, losers, picks, drafts, slotToRoster,
       matchups: byWeek.map(list => list.map(m => ({ roster_id: m.roster_id, matchup_id: m.matchup_id, points: m.points, starters: m.starters, players: m.players, players_points: m.players_points }))),
       transactions: transactions.sort((a, b) => a.created - b.created)
     },
@@ -465,7 +482,7 @@ let built = null;
 function build(seed, mode, real) {
   setMode(mode);
   R = rng(seed + (MODE === 'dynasty' ? 7919 : 0));
-  players = {}; nextId = 1000; usedNames.clear();
+  players = {}; nextId = 1000; usedNames.clear(); PICK_OWNER = {};
   REAL = MODE === 'dynasty' ? real : null;
   if (REAL) REAL.players.forEach((x, i) => {
     const id = String(i);

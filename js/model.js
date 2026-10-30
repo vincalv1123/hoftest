@@ -1,7 +1,7 @@
 // Turns raw Sleeper data into every stat, award and score the site shows.
 // Pure functions only: nothing here touches the page or the network.
 
-import { CONFIG } from './config.js?v=202610301655';
+import { CONFIG } from './config.js?v=202610302015';
 
 const ELIGIBLE = {
   QB: ['QB'], RB: ['RB'], WR: ['WR'], TE: ['TE'], K: ['K'], DEF: ['DEF'],
@@ -277,25 +277,78 @@ function buildSeason(raw, players, isNewest, later, format, opts) {
   rids.forEach(r => { waivers[r].perDollar = S.usesFaab && waivers[r].faab > 0 ? waivers[r].pts / waivers[r].faab : null; });
   S.waivers = waivers;
 
-  // Trades: points each incoming player scored as a starter for his new team, minus the same for players sent away.
+  // Trades.
+  // Redraft: each side is judged by what the trade did to its best possible lineup in every game it played
+  // afterwards (regular season and its own playoff games), compared with keeping what it sent away; by how many
+  // of those games that flipped; and by the expected value of any draft picks that changed hands.
+  // Dynasty: starter points each incoming player scored for his new team (later seasons included), minus the same
+  // for players sent away.
+  const lineupMode = format !== 'dynasty';
   const tradeNet = {};
-  rids.forEach(r => { tradeNet[r] = { net: 0, count: 0 }; });
+  rids.forEach(r => { tradeNet[r] = { net: 0, count: 0, wins: 0, lineup: 0, picks: 0 }; });
   const trades = [];
+  // Every player's points by week, from whichever roster had him.
+  const weekPts = {};
+  allWeeks.forEach(w => { weekPts[w] = {}; Object.values(byWeek[w] || {}).forEach(m => { Object.keys(m.players_points || {}).forEach(pid => { weekPts[w][pid] = m.players_points[pid]; }); }); });
+  // The games each team played (regular season plus winners-bracket playoff games), by week.
+  const gameOf = {};
+  games.forEach(g => { gameOf[g.week] = gameOf[g.week] || {};
+    gameOf[g.week][g.a] = { opp: g.b, me: g.ap, them: g.bp, playoff: g.playoff, round: g.round };
+    gameOf[g.week][g.b] = { opp: g.a, me: g.bp, them: g.ap, playoff: g.playoff, round: g.round }; });
+  const finalRound = (raw.winners || []).reduce((mx, m) => Math.max(mx, m.r || 0), 0);
+  const result = (a, b) => (a > b ? 1 : a < b ? 0 : 0.5);
+  // Best lineup this week with the roster as it was, minus the best lineup had it kept what it sent away.
+  const lineupDelta = (rid, w, got, sent) => {
+    const m = byWeek[w] && byWeek[w][rid];
+    if (!m) return null;
+    const have = got.filter(pid => m.players.indexOf(pid) >= 0);
+    const without = m.players.filter(pid => have.indexOf(pid) < 0).concat(sent.filter(pid => m.players.indexOf(pid) < 0));
+    const pts = { ...weekPts[w], ...m.players_points };
+    return optimalPoints(slots, m.players, pts, posOf) - optimalPoints(slots, without, pts, posOf);
+  };
   raw.transactions.filter(t => t.type === 'trade').forEach(t => {
     const sides = {};
-    t.roster_ids.forEach(r => { sides[r] = { rid: r, got: [], sent: [], net: 0 }; });
+    t.roster_ids.forEach(r => { sides[r] = { rid: r, got: [], sent: [], net: 0, lineup: 0, wins: 0, poWins: 0, pickPts: 0, weeks: [], titleSwing: false }; });
     Object.keys(t.adds).forEach(pid => {
       const to = t.adds[pid];
       const from = t.drops[pid];
       const r = starterPointsFor(to, pid, t.leg);
       if (format === 'dynasty') r.pts += futurePoints(ownerOf[to], pid);
-      if (sides[to]) { sides[to].got.push({ pid, pts: r.pts }); sides[to].net += r.pts; }
-      if (sides[from]) { sides[from].sent.push({ pid, pts: r.pts }); sides[from].net -= r.pts; }
+      if (sides[to]) { sides[to].got.push({ pid, pts: r.pts }); if (!lineupMode) sides[to].net += r.pts; }
+      if (sides[from]) { sides[from].sent.push({ pid, pts: r.pts }); if (!lineupMode) sides[from].net -= r.pts; }
     });
-    const list = Object.values(sides);
-    list.forEach(s => { if (tradeNet[s.rid]) { tradeNet[s.rid].net += s.net; tradeNet[s.rid].count++; } });
     (t.picks || []).forEach(d => { if (sides[d.to]) (sides[d.to].picks = sides[d.to].picks || []).push(d); });
-    trades.push({ season: raw.season, week: t.leg, created: t.created, sides: list });
+    if (lineupMode) {
+      const ids = t.roster_ids.filter(r => sides[r]);
+      Object.keys(gameOf).map(Number).filter(w => w >= t.leg).sort((a, b) => a - b).forEach(w => {
+        const d = {};
+        ids.forEach(r => { if (gameOf[w][r]) d[r] = lineupDelta(r, w, sides[r].got.map(g => g.pid), sides[r].sent.map(g => g.pid)) || 0; });
+        ids.forEach(r => {
+          const g = gameOf[w][r];
+          if (!g) return;
+          const s = sides[r];
+          // Without the trade this team would have scored its delta less; so would its opponent, if it was the trade partner.
+          const flip = result(g.me, g.them) - result(g.me - d[r], g.them - (d[g.opp] || 0));
+          s.lineup += d[r];
+          if (g.playoff) s.poWins += flip; else s.wins += flip;
+          if (g.playoff && g.round === finalRound && flip > 0) s.titleSwing = true;
+          s.weeks.push({ week: w, delta: d[r], flip, playoff: g.playoff });
+        });
+      });
+      // Draft picks: worth the points above replacement a pick in that slot is expected to give (see pickValue).
+      (t.picks || []).forEach(dp => {
+        const v = opts.pickValue ? opts.pickValue(dp) : null;
+        dp.value = v ? v.value : null; dp.estimate = v ? v.estimate : false; dp.pickNo = v ? v.pickNo : null;
+        if (dp.value == null) return;
+        if (sides[dp.to]) sides[dp.to].pickPts += dp.value;
+        if (sides[dp.from]) sides[dp.from].pickPts -= dp.value;
+      });
+      ids.forEach(r => { const s = sides[r]; s.net = s.lineup + s.pickPts; s.winsTotal = s.wins + s.poWins; });
+    }
+    const list = Object.values(sides);
+    list.forEach(s => { const T = tradeNet[s.rid]; if (!T) return;
+      T.net += s.net; T.count++; T.wins += s.winsTotal || 0; T.lineup += s.lineup; T.picks += s.pickPts; });
+    trades.push({ season: raw.season, week: t.leg, created: t.created, sides: list, lineupMode });
   });
   trades.sort((a, b) => a.created - b.created);
   S.trades = trades;
@@ -437,21 +490,26 @@ function buildSeason(raw, players, isNewest, later, format, opts) {
   S.weeklyHighs = allScores.slice().sort((a, b) => b.pts - a.pts).slice(0, 10);
 
   // Manager Score for the season.
-  const results = {}; const startSit = {}; const waiv = {}; const trade = {}; const draft = {};
+  const results = {}; const startSit = {}; const waiv = {}; const trade = {}; const tradeWins = {}; const draft = {};
   rids.forEach(r => {
     results[r] = 0.5 * st[r].winPct + 0.5 * st[r].allPlayPct;
     startSit[r] = eff[r].pct;
     waiv[r] = waivers[r].pts;
     trade[r] = tradeNet[r].net;
+    tradeWins[r] = tradeNet[r].wins;
     draft[r] = draftVal[r];
   });
   // Dynasty drafts are left out of the Manager Score; the other parts are reweighted to fill the gap.
   const hasDraft = picks.length > 0 && format !== 'dynasty';
   const sc = { results: scale(results), startSit: scale(startSit), waivers: scale(waiv), trades: scale(trade), draft: scale(draft) };
+  // Redraft trades: half for lineup points gained (picks included), half for games won.
+  S.tradeScored = lineupMode;
+  sc.tradePts = sc.trades; sc.tradeWins = scale(tradeWins);
+  if (lineupMode) { const t2 = {}; rids.forEach(r => { t2[r] = (sc.tradePts[r] + sc.tradeWins[r]) / 2; }); sc.trades = t2; }
   const W = CONFIG.weights;
   const wsum = W.results + W.startSit + W.waivers + W.trades + (hasDraft ? W.draft : 0);
   // League average and spread for each raw stat, kept so profiles can show the math.
-  const rawSets = { results, startSit, waivers: waiv, trades: trade, draft };
+  const rawSets = { results, startSit, waivers: waiv, trades: trade, tradeWins, draft };
   S.scoreStats = {};
   Object.keys(rawSets).forEach(k => { const xs = rids.map(r => rawSets[k][r]); S.scoreStats[k] = { mean: mean(xs), sd: sd(xs) }; });
   S.hasDraft = hasDraft;
@@ -469,8 +527,8 @@ function buildSeason(raw, players, isNewest, later, format, opts) {
     const total = (W.results * parts.results + W.startSit * parts.startSit + W.waivers * parts.waivers + W.trades * parts.trades + (hasDraft ? W.draft * parts.draft : 0)) / wsum;
     scores[r] = {
       total, parts, games: st[r].games,
-      raw: { results: results[r], startSit: startSit[r], waivers: waiv[r], trades: trade[r], draft: draft[r] },
-      scaled: { results: sc.results[r], startSit: sc.startSit[r], waivers: sc.waivers[r], trades: sc.trades[r], draft: sc.draft[r] },
+      raw: { results: results[r], startSit: startSit[r], waivers: waiv[r], trades: trade[r], tradeWins: tradeWins[r], draft: draft[r] },
+      scaled: { results: sc.results[r], startSit: sc.startSit[r], waivers: sc.waivers[r], trades: sc.trades[r], tradePts: sc.tradePts[r], tradeWins: sc.tradeWins[r], draft: sc.draft[r] },
       bonus, bonusParts
     };
   });
@@ -592,6 +650,28 @@ function simulateOdds(S, raw, byWeek, st) {
   const out = {};
   rids.forEach(r => { out[r] = { playoffs: bracketLive ? (S.playoffRids.has(r) ? 1 : 0) : made[r] / N, first: top[r] / N, bye: byes[r] / N, title: titles[r] / N, final: finals[r] / N }; });
   return { byRid: out, remainingWeeks: Math.max(0, lastReg - S.scoredThrough), bracketLive, byeCount };
+}
+
+// Redraft: what a traded draft pick is worth, in points above replacement. Once that draft has happened it is the
+// expected value of the exact pick (the original team's slot in that round), the same number the draft grades use.
+// Before then, the average expected value of that round in the latest draft.
+function pickValues(built, raws) {
+  const by = {};
+  built.forEach((S, i) => { by[S.season] = { S, raw: raws[i] }; });
+  const latest = built.find(S => S.picks.length && S.picks.some(p => p.expected != null));
+  return dp => {
+    const B = by[String(dp.season)];
+    if (B && B.S.picks.length) {
+      const map = B.raw.slotToRoster || {};
+      const slot = Object.keys(map).find(k => String(map[k]) === String(dp.orig));
+      const p = slot != null ? B.S.picks.find(q => q.round === dp.round && String(q.draft_slot) === String(slot)) : null;
+      if (p && p.expected != null) return { value: p.expected, estimate: false, pickNo: p.pick_no };
+    }
+    const src = B && B.S.picks.length ? B.S : latest;
+    if (!src) return null;
+    const xs = src.picks.filter(q => q.round === dp.round && q.expected != null).map(q => q.expected);
+    return xs.length ? { value: mean(xs), estimate: true, pickNo: null } : null;
+  };
 }
 
 // Expected positional value by overall pick number, smoothed across the league's finished drafts.
@@ -760,7 +840,11 @@ export function buildModel(data, format) {
   // data.seasons is newest first, so the seasons after season i are 0..i-1 (oldest first).
   const build = opts => data.seasons.map((raw, i) => buildSeason(raw, players, i === 0, data.seasons.slice(0, i).reverse(), format || 'redraft', opts));
   // Two passes: the first works out every pick's positional value, which the slot curves are built from.
-  const seasons = build({ curves: draftCurves(build({ skipOdds: true })) });
+  const curves = draftCurves(build({ skipOdds: true }));
+  // Redraft trades with draft picks need each pick's expected value, which needs the slot curves: one more pass.
+  const hasPickTrades = (format || 'redraft') !== 'dynasty' && data.seasons.some(raw => (raw.transactions || []).some(t => t.type === 'trade' && (t.picks || []).length));
+  const pickValue = hasPickTrades ? pickValues(build({ skipOdds: true, curves }), data.seasons) : null;
+  const seasons = build({ curves, pickValue });
   const managers = {};
   data.seasons.forEach(raw => {
     raw.rosters.forEach(r => {
@@ -781,7 +865,7 @@ export function buildModel(data, format) {
     career[id] = { id, wins: 0, losses: 0, ties: 0, pf: 0, pa: 0, maxPf: 0, allPlay: 0, allPlayGames: 0, games: 0, titles: 0, finals: 0, playoffs: 0, lastPlaces: 0,
       luck: 0, regPts: 0, regGames: 0, poPts: 0, poGames: 0, scoreWeighted: 0, scoreGames: 0,
       parts: { results: 0, startSit: 0, waivers: 0, trades: 0, draft: 0 }, draftGames: 0,
-      tradeNet: 0, trades: 0, waiverPts: 0, benchLeft: 0, effActual: 0, effOptimal: 0, bySeason: [] };
+      tradeNet: 0, tradeWins: 0, trades: 0, waiverPts: 0, benchLeft: 0, effActual: 0, effOptimal: 0, bySeason: [] };
   });
   seasons.forEach(S => {
     S.rids.forEach(r => {
@@ -800,7 +884,7 @@ export function buildModel(data, format) {
       c.scoreWeighted += sc.total * g; c.scoreGames += g;
       ['results', 'startSit', 'waivers', 'trades'].forEach(k => { c.parts[k] += sc.parts[k] * g; });
       if (sc.parts.draft != null) { c.parts.draft += sc.parts.draft * g; c.draftGames += g; }
-      c.tradeNet += S.tradeNet[r].net; c.trades += S.tradeNet[r].count;
+      c.tradeNet += S.tradeNet[r].net; c.trades += S.tradeNet[r].count; c.tradeWins += S.tradeNet[r].wins || 0;
       c.waiverPts += S.waivers[r].pts;
       c.benchLeft += S.efficiency[r].benchLeft; c.effActual += S.efficiency[r].actual; c.effOptimal += S.efficiency[r].optimal;
       c.bySeason.push({ season: S.season, rid: r, score: sc.total, rank: s.rank, wins: s.wins, losses: s.losses, ties: s.ties,

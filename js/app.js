@@ -2,10 +2,10 @@
 // The league comes from the address (?league=<id>&u=<username>); without one, the start screen shows.
 // Routes: #all, #search, #drafts[@season], #awards, #s<season>, #m-<managerId>[@season], #vs-<id>~<id>.
 
-import { CONFIG } from './config.js?v=202610301655';
-import { loadAll, loadLiveWeek, loadWeekStats, lookupUser, nflState, userLeagues, leagueInfo, clearSavedSeasons } from './data.js?v=202610301655';
-import { buildModel, optimalPoints } from './model.js?v=202610301655';
-import { parse as parseQuery, answer as answerQuery, EXAMPLES, HELP, examplesFor } from './search.js?v=202610301655';
+import { CONFIG } from './config.js?v=202610302015';
+import { loadAll, loadLiveWeek, loadWeekStats, lookupUser, nflState, userLeagues, leagueInfo, clearSavedSeasons } from './data.js?v=202610302015';
+import { buildModel, optimalPoints } from './model.js?v=202610302015';
+import { parse as parseQuery, answer as answerQuery, EXAMPLES, HELP, examplesFor } from './search.js?v=202610302015';
 
 const $app = document.getElementById('app');
 const $tabs = document.getElementById('tabs');
@@ -23,6 +23,10 @@ const f2 = x => (Math.round(x * 100) / 100).toFixed(2);
 const comma = x => Number(x).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const signed = (x, d = 1) => (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toFixed(d);
 const pct3 = x => x.toFixed(3).replace(/^0/, '');
+// Redraft trades are graded on lineup points gained and games flipped; dynasty on starter points.
+const tradeLineup = () => !LG || LG.format !== 'dynasty';
+const winsTxt = w => signed(w || 0, (w || 0) % 1 ? 1 : 0) + ' W';
+const tradeLine = (net, wins) => tradeLineup() ? signed(net) + ' lineup pts · ' + winsTxt(wins) : 'net ' + signed(net) + ' starter pts';
 const wl = (w, l, t) => w + '–' + l + (t ? '–' + t : '');
 const name = id => esc(M.nameOf(id));
 const mlink = id => PX + 'm-' + encodeURIComponent(id);
@@ -108,19 +112,25 @@ function openTrade(i) {
     document.body.appendChild(dlg);
     dlg.addEventListener('click', e => { if (e.target === dlg || e.target.closest('[data-close]')) dlg.close(); });
   }
-  const pickLabel = d => `${d.season} round ${d.round} pick${S && d.orig !== d.to && d.orig !== d.from && S.ownerOf[d.orig] ? ` <span class="note">(originally ${name(S.ownerOf[d.orig])}'s)</span>` : ''}`;
+  const pickLabel = d => `${d.season} round ${d.round} pick${d.pickNo && S ? ' <span class="note">(' + d.round + '.' + String(((d.pickNo - 1) % S.rids.length) + 1).padStart(2, '0') + ')</span>' : ''}${S && d.orig !== d.to && d.orig !== d.from && S.ownerOf[d.orig] ? ` <span class="note">(originally ${name(S.ownerOf[d.orig])}'s)</span>` : ''}`;
+  const pickVal = d => (t.lineupMode && d.value != null ? `<span class="num" style="font-size:13px">≈${f1(d.value)} pts${d.estimate ? ' <span class="note">est.</span>' : ''}</span>` : '<span class="note">pick</span>');
+  const flips = s2 => (s2.weeks || []).filter(x => x.flip).map(x => `<span class="tag ${x.flip > 0 ? 'up' : 'down'}">Wk ${x.week}${x.playoff ? ' playoffs' : ''} ${x.flip > 0 ? (x.flip < 1 ? 'tie → W' : 'W') : (x.flip > -1 ? 'tie → L' : 'L')}</span>`).join(' ');
+  const breakdown = s2 => `<div class="note" style="margin:2px 0 6px">Lineup ${signed(s2.lineup)}${(s2.picks || []).length || s2.pickPts ? ' · picks ' + signed(s2.pickPts) : ''} · games ${winsTxt(s2.wins)}${s2.poWins ? ' · playoffs ' + winsTxt(s2.poWins) : ''}${s2.titleSwing ? ' · <span class="gold-t">won the title because of it</span>' : ''}</div>${flips(s2) ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">${flips(s2)}</div>` : ''}`;
   dlg.innerHTML = `<div class="modal-card">
     <div class="line2" style="align-items:center"><h2 id="trade-title" style="font-size:18px">Trade · ${t.season} Week ${t.week}</h2>
       <button type="button" class="close" data-close aria-label="Close">✕</button></div>
     <div class="tsides">${t.sides.map(s => { const id = ownerOf(s);
       return `<div class="side"><div class="line2"><a class="name" href="${mlink(id)}" style="text-decoration:none" data-close>${name(id)}</a>
-        <span class="num ${sign(s.net)}" style="font-size:16px">${signed(s.net)}</span></div>
+        <span class="num ${sign(s.net)}" style="font-size:16px">${signed(s.net)}${t.lineupMode ? `<span class="note" style="font-size:13px"> · ${winsTxt(s.winsTotal)}</span>` : ''}</span></div>
+        ${t.lineupMode ? breakdown(s) : ''}
         <span class="note" style="text-transform:uppercase;letter-spacing:.05em;font-size:11px">Received</span>
         <div class="rows">${s.got.map(g => `<div class="row" style="grid-template-columns:minmax(0,1fr) auto;padding:9px 0">
             <span style="font-size:14px">${player(g.pid)} <span class="note">${esc(M.playerPos(g.pid))}</span></span><span class="num" style="font-size:13px">${f1(g.pts)} pts</span></div>`).join('')}
-          ${(s.picks || []).map(d => `<div class="row" style="grid-template-columns:minmax(0,1fr) auto;padding:9px 0"><span style="font-size:14px">${pickLabel(d)}</span><span class="note">pick</span></div>`).join('')}
+          ${(s.picks || []).map(d => `<div class="row" style="grid-template-columns:minmax(0,1fr) auto;padding:9px 0"><span style="font-size:14px">${pickLabel(d)}</span>${pickVal(d)}</div>`).join('')}
           ${!s.got.length && !(s.picks || []).length ? '<p class="note" style="margin:8px 0 0">Nothing on record (FAAB or other).</p>' : ''}</div></div>`; }).join('')}</div>
-    <p class="note" style="margin:0">Pts = starter points each player scored for his new team after the trade${dynasty ? ', including later seasons while he stayed' : ', rest of that season'}. The number by each name is the net. Picks count as 0.</p>
+    <p class="note" style="margin:0">${t.lineupMode
+      ? 'The number by each name is lineup points gained: every game after the trade (playoffs included), the best lineup that team could start with the trade minus the best it could have started had it kept what it sent, plus the value of any draft picks. A pick is worth the points above replacement a pick in that slot is expected to give (est. = that draft hasn\u2019t happened yet, so the round\u2019s average). W = games won (or lost) because of the trade, counting the other team\u2019s change when the two played each other. Player pts = starter points he scored for his new team.'
+      : 'Pts = starter points each player scored for his new team after the trade' + (dynasty ? ', including later seasons while he stayed' : ', rest of that season') + '. The number by each name is the net. Picks count as 0.'}</p>
   </div>`;
   if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
   const c = dlg.querySelector('.close'); if (c) c.focus();
@@ -263,7 +273,7 @@ function viewAll() {
     const others = heist.trade.sides.filter(s => s.owner !== heist.side.owner).map(s => name(s.owner)).join(' & ');
     cards.push(`<button type="button" class="box tradebtn"${tradeAttr(heist.trade)}>${hdr('Best trade win · tap for details', 'up')}
       <div class="line2"><span style="font-weight:600">${name(heist.side.owner)} over ${others}</span><span class="num up">${signed(heist.side.net)}</span></div>
-      <span class="note">${heist.trade.season} · Week ${heist.trade.week} · got ${heist.side.got.map(g => player(g.pid)).join(', ') || 'picks'} · starter pts gained, ${LG.format === 'dynasty' ? 'including later seasons' : 'rest of season'}</span></button>`);
+      <span class="note">${heist.trade.season} · Week ${heist.trade.week} · got ${heist.side.got.map(g => player(g.pid)).join(', ') || 'picks'} · ${LG.format === 'dynasty' ? 'starter pts gained, including later seasons' : 'lineup pts gained (picks included) · ' + winsTxt(heist.side.winsTotal)}</span></button>`);
   }
   if (steal) cards.push(`<button type="button" class="box tradebtn" data-draft-team="${steal.S.season}:${steal.p.roster_id}">${hdr('Best steal of the draft · tap for the draft', 'up')}
     <div class="line2"><span style="font-weight:600">${player(steal.p.player_id)} <span class="note">${esc(steal.p.pos)}</span></span><span class="num up">R${steal.p.round} → ${esc(steal.p.pos)}${steal.S.posRank[steal.p.player_id]}</span></div>
@@ -452,7 +462,7 @@ function seasonAwards(S) {
   }
   let toy = null;
   S.trades.forEach(t => t.sides.forEach(x => { if (!toy || x.net > toy.s.net) toy = { t, s: x }; }));
-  if (toy && toy.s.net > 0) aw.push({ key: 'trade', k: 'Trade of the Year', rid: toy.s.rid, v: signed(toy.s.net), d: 'Week ' + toy.t.week + ' · got ' + (toy.s.got.map(g => player(g.pid)).join(', ') || 'picks'), cls: 'gold-t', good: true });
+  if (toy && toy.s.net > 0) aw.push({ key: 'trade', k: 'Trade of the Year', rid: toy.s.rid, v: signed(toy.s.net), d: 'Week ' + toy.t.week + ' · got ' + (toy.s.got.map(g => player(g.pid)).join(', ') || 'picks') + (toy.t.lineupMode ? ' · ' + winsTxt(toy.s.winsTotal) : ''), cls: 'gold-t', good: true });
   // Dynasty: Scout of the Year replaces Steal of the Draft. It adds up what each manager's rookie-draft picks
   // produced that season (players in their first 3 seasons), so a finished season's winner never changes.
   if (LG.format === 'dynasty' && M && M.dynDrafts && M.dynDrafts.length) {
@@ -571,11 +581,11 @@ function viewSeason(S) {
 
   if (S.trades.length) {
     out.push(section(`<details class="calc trades-dd"><summary><h2>Trades</h2><span class="note">${S.trades.length} trade${S.trades.length > 1 ? 's' : ''}</span></summary><div class="calc-body">
-      <span class="note">${LG.format === 'dynasty' ? 'Starter pts since the trade, all seasons' : 'Starter pts for the rest of the season'} · tap a trade for both sides</span>
+      <span class="note">${LG.format === 'dynasty' ? 'Starter pts since the trade, all seasons' : 'Lineup pts gained (picks included) and games flipped, rest of the season and playoffs'} · tap a trade for both sides</span>
       <div style="display:flex;flex-direction:column;gap:10px">${S.trades.slice().reverse().map(t => `<button type="button" class="box tradebtn"${tradeAttr(t)}><div class="top-line"><span>Week ${t.week}</span><span>Tap for details</span></div>
       ${t.sides.map(s => `<div class="line2"><span style="font-size:14px;min-width:0"><span style="font-weight:500">${nm(s.rid)}</span>
         <span style="color:#8A9C9F"> got ${s.got.map(g => player(g.pid)).join(', ') || 'draft picks'}</span></span>
-        <span class="num ${sign(s.net)}" style="font-size:14px;white-space:nowrap">${signed(s.net)}</span></div>`).join('')}</button>`).join('')}</div></div></details>`));
+        <span class="num ${sign(s.net)}" style="font-size:14px;white-space:nowrap">${signed(s.net)}${t.lineupMode ? `<span class="note"> · ${winsTxt(s.winsTotal)}</span>` : ''}</span></div>`).join('')}</button>`).join('')}</div></div></details>`));
   }
 
   out.push(ddSection('Team MVPs', 'Most starter points for each team', `<div class="rows">
@@ -665,6 +675,12 @@ function seasonCalc(x) {
   const rows = keys.map(k => {
     const stat = S.scoreStats[k];
     const part = sc.parts[k];
+    if (k === 'trades' && S.tradeScored) {
+      const sw = S.scoreStats.tradeWins;
+      return `<tr><td class="t" style="font-weight:500">${PART_LABELS[k]}</td><td>${signed(sc.raw.trades)} pts<br>${winsTxt(sc.raw.tradeWins)}</td><td style="color:#8A9C9F">${signed(stat.mean)} pts<br>${winsTxt(sw.mean)}</td>
+      <td style="color:#8A9C9F">${f1(stat.sd)}<br>${sw.sd.toFixed(2)}</td><td>${f1(sc.scaled.tradePts)} & ${f1(sc.scaled.tradeWins)}<br>avg ${f1(sc.scaled.trades)}</td>
+      <td style="color:#8A9C9F">${Math.round(W[k] * 100)}%</td><td>${f1(W[k] * part / S.weightSum)}</td></tr>`;
+    }
     return `<tr><td class="t" style="font-weight:500">${PART_LABELS[k]}</td><td>${fmtRaw(k, sc.raw[k])}</td><td style="color:#8A9C9F">${fmtRaw(k, stat.mean)}</td>
       <td style="color:#8A9C9F">${k === 'results' ? stat.sd.toFixed(3) : k === 'startSit' ? (stat.sd * 100).toFixed(1) + '%' : f1(stat.sd)}</td>
       <td>${f1(sc.scaled[k])}${k === 'results' && sc.bonus ? ' <span class="gold-t">+' + sc.bonus + '</span>' : ''}</td>
@@ -674,7 +690,7 @@ function seasonCalc(x) {
     <div class="scroll"><table class="table"><thead><tr><th>Part</th><th>Raw stat</th><th>League avg</th><th>Spread</th><th>Scaled</th><th>Weight</th><th>Adds</th></tr></thead>
     <tbody>${rows}<tr><td class="t" style="font-weight:600">Total</td><td></td><td></td><td></td><td></td><td></td><td style="font-weight:600;color:#F1F4F3">${f1(sc.total)}</td></tr></tbody></table></div>
     <ol class="steps">
-      <li><b>Raw stats.</b> Results = ½ × win % (${pct3(x.st.winPct)}) + ½ × all-play (${pct3(x.st.allPlayPct)}) = ${pct3(sc.raw.results)}. Start/sit = points started ÷ best possible lineup (${comma(x.eff.actual)} ÷ ${comma(x.eff.optimal)}). Waivers = points above a replacement-level starter at each pickup's position, for every start. Trades = starter points gained minus given up.${S.hasDraft ? ' Draft = each pick’s points above a replacement-level starter at his position, minus what the slot was expected to give (70% what picks near it were worth across this league’s drafts, 30% the value of the player who finished that many spots down the board).' : ''}</li>
+      <li><b>Raw stats.</b> Results = ½ × win % (${pct3(x.st.winPct)}) + ½ × all-play (${pct3(x.st.allPlayPct)}) = ${pct3(sc.raw.results)}. Start/sit = points started ÷ best possible lineup (${comma(x.eff.actual)} ÷ ${comma(x.eff.optimal)}). Waivers = points above a replacement-level starter at each pickup's position, for every start. ${S.tradeScored ? 'Trades = lineup points gained (each week\u2019s best lineup with the trade minus without it, plus the expected value of draft picks) and games won or lost because of it; each is scaled on its own and the trades part is their average.' : 'Trades = starter points gained minus given up.'}${S.hasDraft ? ' Draft = each pick’s points above a replacement-level starter at his position, minus what the slot was expected to give (70% what picks near it were worth across this league’s drafts, 30% the value of the player who finished that many spots down the board).' : ''}</li>
       <li><b>Scaled.</b> 50 + 20 × (raw − league avg) ÷ spread, kept between 0 and 100. Spread is the standard deviation across all ${S.rids.length} teams that season.</li>
       <li><b>Bonus.</b> ${sc.bonusParts.length ? 'Results got ' + sc.bonusParts.join(', ') + ' (capped at 100).' : 'No playoff, final or title bonus this season.'}${S.isCurrent ? ' Bonuses are added once the season ends.' : ''}</li>
       <li><b>Score.</b> Each scaled part × its weight, divided by the total weight (${Math.round(S.weightSum * 100)}%) = <b>${f1(sc.total)}</b>.</li>
@@ -703,7 +719,7 @@ function seasonPartRows(S, r) {
     results: wl(st.wins, st.losses, st.ties) + ' · ' + pct3(st.allPlayPct) + ' all-play' + (sc.bonusParts.length ? ' · ' + sc.bonusParts.join(', ') : ''),
     startSit: (eff.pct * 100).toFixed(1) + '% of best lineup · ' + Math.round(eff.benchLeft) + ' pts left on bench',
     waivers: signed(S.waivers[r].pts) + ' pts above replacement from ' + S.waivers[r].adds + ' pickup' + (S.waivers[r].adds === 1 ? '' : 's'),
-    trades: signed(S.tradeNet[r].net) + ' pts across ' + S.tradeNet[r].count + ' trade' + (S.tradeNet[r].count === 1 ? '' : 's'),
+    trades: tradeLine(S.tradeNet[r].net, S.tradeNet[r].wins) + ' across ' + S.tradeNet[r].count + ' trade' + (S.tradeNet[r].count === 1 ? '' : 's'),
     draft: 'Pick value vs. draft slot'
   };
   return keys.map(k => ({ k, w: W[k] / S.weightSum, v: sc.parts[k], d: detail[k] }));
@@ -716,7 +732,7 @@ function careerPartRows(c) {
     results: wl(c.wins, c.losses, c.ties) + ' · ' + pct3(c.allPlayPct) + ' all-play · ' + c.titles + ' title' + (c.titles === 1 ? '' : 's'),
     startSit: (c.effPct * 100).toFixed(1) + '% of best lineup · ' + Math.round(c.benchLeft) + ' pts left on bench',
     waivers: signed(c.waiverPts) + ' pts above replacement from pickups',
-    trades: signed(c.tradeNet) + ' pts across ' + c.trades + ' trade' + (c.trades === 1 ? '' : 's'),
+    trades: tradeLine(c.tradeNet, c.tradeWins) + ' across ' + c.trades + ' trade' + (c.trades === 1 ? '' : 's'),
     draft: 'Average draft part across seasons with a draft'
   };
   return keys.map(k => ({ k, w: W[k] / wsum, v: c.parts[k], d: detail[k] }));
@@ -802,7 +818,7 @@ function viewManager(id, seasonSel) {
       ['Worst week', x.worst ? f2(x.worst.pts) : '—', x.worst ? 'Week ' + x.worst.w : ''],
       ['Start/sit', (x.eff.pct * 100).toFixed(1) + '%', Math.round(x.eff.benchLeft) + ' pts left on the bench'],
       ['Waivers', x.waiv.adds + ' adds', signed(x.waiv.pts) + ' over repl.' + (S.usesFaab ? ' · $' + x.waiv.faab + ' FAAB' : '')],
-      ['Trades', String(x.trades.count), 'Net ' + signed(x.trades.net) + ' starter pts'],
+      ['Trades', String(x.trades.count), tradeLine(x.trades.net, x.trades.wins)],
       ['Team MVP', x.mvp ? esc(M.playerName(x.mvp.pid)) : '—', x.mvp ? f1(x.mvp.pts) + ' starter pts' : '']
     ])));
     out.push(section(managerSeasonAwards(x)));
@@ -811,7 +827,7 @@ function viewManager(id, seasonSel) {
       ['Results', W.results, sc.parts.results, `Win % ${pct3(st.winPct)} · all-play ${pct3(st.allPlayPct)}${sc.bonusParts.length ? ' · bonus: ' + sc.bonusParts.join(', ') : ''}`],
       ['Start/sit', W.startSit, sc.parts.startSit, `Started ${(x.eff.pct * 100).toFixed(1)}% of best possible points · ${Math.round(x.eff.benchLeft)} pts left on the bench`],
       ['Waivers', W.waivers, sc.parts.waivers, `${signed(x.waiv.pts)} pts above replacement from ${x.waiv.adds} pickups${x.waiv.best && x.waiv.best.pts > 0 ? ' · best: ' + player(x.waiv.best.pid) + ' (' + signed(x.waiv.best.pts) + ')' : ''}`],
-      ['Trades', W.trades, sc.parts.trades, `${x.trades.count} trade${x.trades.count === 1 ? '' : 's'} · net ${signed(x.trades.net)} starter pts`],
+      ['Trades', W.trades, sc.parts.trades, `${x.trades.count} trade${x.trades.count === 1 ? '' : 's'} · ${tradeLine(x.trades.net, x.trades.wins)}`],
       ['Draft', W.draft, sc.parts.draft, `${x.picks} picks · ${signed(x.draftVal, 0)} positional pts vs. what picks near those slots were worth`]
     ].filter(p => p[2] != null);
     out.push(section(breakdown(`How the ${S.season} ${Math.round(sc.total)} breaks down`, parts) + seasonCalc(x)));
@@ -835,14 +851,14 @@ function viewManager(id, seasonSel) {
       ['Worst week', worst ? f2(worst.pts) : '—', worst ? worst.season + ' · Week ' + worst.w : ''],
       ['Start/sit', (c.effPct * 100).toFixed(1) + '%', Math.round(c.benchLeft) + ' pts left on the bench'],
       ['Waivers', adds + ' adds', signed(c.waiverPts) + ' over repl.' + (faabSeasons ? ' · $' + faab + ' FAAB' : '')],
-      ['Trades', String(c.trades), 'Net ' + signed(c.tradeNet) + ' starter pts'],
+      ['Trades', String(c.trades), tradeLine(c.tradeNet, c.tradeWins)],
       ['Draft', picks + ' picks', signed(draft, 0) + ' positional pts vs. their slots']
     ])));
     const parts = [
       ['Results', W.results, c.parts.results, `Win % ${pct3(c.winPct)} · all-play ${pct3(apG ? apSum / apG : 0)}${c.titles ? ' · title bonus ×' + c.titles : ''}`],
       ['Start/sit', W.startSit, c.parts.startSit, `Started ${(c.effPct * 100).toFixed(1)}% of best possible points · ${Math.round(c.benchLeft)} pts left on the bench`],
       ['Waivers', W.waivers, c.parts.waivers, `${signed(c.waiverPts)} pts above replacement from ${adds} pickups`],
-      ['Trades', W.trades, c.parts.trades, `${c.trades} trade${c.trades === 1 ? '' : 's'} · net ${signed(c.tradeNet)} starter pts`],
+      ['Trades', W.trades, c.parts.trades, `${c.trades} trade${c.trades === 1 ? '' : 's'} · ${tradeLine(c.tradeNet, c.tradeWins)}`],
       ['Draft', W.draft, c.parts.draft, `${picks} picks · ${signed(draft, 0)} positional pts vs. what their draft slots usually produce`]
     ].filter(p => p[2] != null);
     out.push(section(managerCareerAwards(id, list)));
