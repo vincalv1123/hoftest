@@ -247,6 +247,26 @@ function simulateSeason(season, owners, isCurrent, carry) {
       main: kind !== 'rookie', rookieShare: picks.length ? rookies / picks.length : 0, picks,
       slotToRoster: Object.fromEntries(order.map((r, i) => [i + 1, r])) });
   }
+  // Redraft: a few draft-day trades swap picks only (one pick for one or two later ones). Players are never part of them.
+  const draftTrades = [];
+  if (MODE === 'redraft' && !carry) {
+    const ownedBy = (rd, team) => { const own = rids.filter(o => pickOwner(season, rd, o) === team); return own.indexOf(team) >= 0 ? team : own[0]; };
+    const n = randint(0, 3);
+    for (let k = 0; k < n; k++) {
+      const [a, b] = shuffle(rids).slice(0, 2);
+      const ra = randint(1, 6); const rb1 = Math.min(ROUNDS, ra + randint(1, 2)); const rb2 = Math.min(ROUNDS, rb1 + randint(2, 6));
+      const moves = [[a, b, ra], [b, a, rb1]].concat(rand() < 0.6 && rb2 > rb1 ? [[b, a, rb2]] : []);
+      const picks = [];
+      for (const [from, to, rd] of moves) {
+        const orig = ownedBy(rd, from);
+        if (orig == null) { picks.length = 0; break; }
+        picks.push({ season: String(season), round: rd, from, to, orig });
+      }
+      if (!picks.length) continue;
+      picks.forEach(d => { ((PICK_OWNER[season] = PICK_OWNER[season] || {})[d.round] = PICK_OWNER[season][d.round] || {})[d.orig] = d.to; });
+      draftTrades.push({ type: 'trade', leg: 1, adds: {}, drops: {}, roster_ids: [a, b], bid: null, created: Date.UTC(season, 3, 20) + k * 60000, picks });
+    }
+  }
   if (!carry) {
     runDraft(MODE === 'dynasty' ? 'startup' : 'main', ROUNDS, shuffle(rids), true, active, 20);
   } else {
@@ -282,7 +302,7 @@ function simulateSeason(season, owners, isCurrent, carry) {
   const scheduleRR = roundRobin(shuffle(rids));
   const regWeeks = PSTART - 1;
   const schedule = []; for (let w = 1; w <= regWeeks; w++) schedule.push(scheduleRR[(w - 1) % scheduleRR.length]);
-  const transactions = [];
+  const transactions = draftTrades.slice();
   const faab = {}; rids.forEach(r => { faab[r] = 100; });
   const baseTime = Date.UTC(season, 8, 5);
   const scoredThrough = isCurrent ? LIVE_WEEK - 1 : LAST_WEEK;
@@ -325,17 +345,7 @@ function simulateSeason(season, owners, isCurrent, carry) {
           if (back) {
             roster[a] = roster[a].filter(x => x !== pa).concat([back]);
             roster[b] = roster[b].filter(x => x !== back).concat([pa]);
-            // Redraft: some trades add one of next year's draft picks as a sweetener.
-            const tp = [];
-            if (MODE === 'redraft' && rand() < 0.4) {
-              const giver = rand() < 0.5 ? a : b; const taker = giver === a ? b : a;
-              const rd = randint(1, 8); const next = season + 1;
-              if (pickOwner(next, rd, giver) === giver) {
-                ((PICK_OWNER[next] = PICK_OWNER[next] || {})[rd] = PICK_OWNER[next][rd] || {})[giver] = taker;
-                tp.push({ season: String(next), round: rd, from: giver, to: taker, orig: giver });
-              }
-            }
-            transactions.push({ type: 'trade', leg: w, adds: { [back]: a, [pa]: b }, drops: { [pa]: a, [back]: b }, roster_ids: [a, b], bid: null, created: baseTime + w * 7 * 864e5 - 3 * 864e5 + randint(0, 864e5), picks: tp });
+            transactions.push({ type: 'trade', leg: w, adds: { [back]: a, [pa]: b }, drops: { [pa]: a, [back]: b }, roster_ids: [a, b], bid: null, created: baseTime + w * 7 * 864e5 - 3 * 864e5 + randint(0, 864e5), picks: [] });
             break;
           }
         }
