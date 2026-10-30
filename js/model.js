@@ -1,7 +1,7 @@
 // Turns raw Sleeper data into every stat, award and score the site shows.
 // Pure functions only: nothing here touches the page or the network.
 
-import { CONFIG } from './config.js?v=202610302045';
+import { CONFIG } from './config.js?v=202610302110';
 
 const ELIGIBLE = {
   QB: ['QB'], RB: ['RB'], WR: ['WR'], TE: ['TE'], K: ['K'], DEF: ['DEF'],
@@ -629,7 +629,8 @@ function simulateOdds(S, raw, byWeek, st) {
 
 // Redraft: what a traded draft pick is worth, in points above replacement. Once that draft has happened it is the
 // expected value of the exact pick (the original team's slot in that round), the same number the draft grades use.
-// Before then, the average expected value of that round in the latest draft.
+// Before then, the average expected value of that round in the latest draft. Never below 0, like players:
+// a late pick that usually yields a below-replacement player is worth nothing, not less than nothing.
 function pickValues(built, raws) {
   const by = {};
   built.forEach((S, i) => { by[S.season] = { S, raw: raws[i] }; });
@@ -640,12 +641,12 @@ function pickValues(built, raws) {
       const map = B.raw.slotToRoster || {};
       const slot = Object.keys(map).find(k => String(map[k]) === String(dp.orig));
       const p = slot != null ? B.S.picks.find(q => q.round === dp.round && String(q.draft_slot) === String(slot)) : null;
-      if (p && p.expected != null) return { value: p.expected, estimate: false, pickNo: p.pick_no };
+      if (p && p.expected != null) return { value: Math.max(0, p.expected), estimate: false, pickNo: p.pick_no };
     }
     const src = B && B.S.picks.length ? B.S : latest;
     if (!src) return null;
     const xs = src.picks.filter(q => q.round === dp.round && q.expected != null).map(q => q.expected);
-    return xs.length ? { value: mean(xs), estimate: true, pickNo: null } : null;
+    return xs.length ? { value: Math.max(0, mean(xs)), estimate: true, pickNo: null } : null;
   };
 }
 

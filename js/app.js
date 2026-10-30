@@ -2,10 +2,10 @@
 // The league comes from the address (?league=<id>&u=<username>); without one, the start screen shows.
 // Routes: #all, #search, #drafts[@season], #awards, #s<season>, #m-<managerId>[@season], #vs-<id>~<id>.
 
-import { CONFIG } from './config.js?v=202610302045';
-import { loadAll, loadLiveWeek, loadWeekStats, lookupUser, nflState, userLeagues, leagueInfo, clearSavedSeasons } from './data.js?v=202610302045';
-import { buildModel, optimalPoints } from './model.js?v=202610302045';
-import { parse as parseQuery, answer as answerQuery, EXAMPLES, HELP, examplesFor } from './search.js?v=202610302045';
+import { CONFIG } from './config.js?v=202610302110';
+import { loadAll, loadLiveWeek, loadWeekStats, lookupUser, nflState, userLeagues, leagueInfo, clearSavedSeasons } from './data.js?v=202610302110';
+import { buildModel, optimalPoints } from './model.js?v=202610302110';
+import { parse as parseQuery, answer as answerQuery, EXAMPLES, HELP, examplesFor } from './search.js?v=202610302110';
 
 const $app = document.getElementById('app');
 const $tabs = document.getElementById('tabs');
@@ -129,7 +129,7 @@ function openTrade(i) {
           ${!s.got.length && !(s.picks || []).length ? '<p class="note" style="margin:8px 0 0">Nothing on record (FAAB or other).</p>' : ''}</div></div>`; }).join('')}</div>
     <p class="note" style="margin:0">${t.valueMode
       ? (t.draftDay
-        ? 'A draft-day pick trade. Each pick is worth the points above a replacement-level starter that a pick in that slot is expected to give (the same number the draft grades use). The number by each name is value got minus value given.'
+        ? 'A draft-day pick trade. Each pick is worth the points above a replacement-level starter that a pick in that slot is expected to give (the same number the draft grades use, never below 0). The number by each name is value got minus value given.'
         : 'Judged in a vacuum: each player is worth his points above a replacement-level starter at his position for the rest of the season after the trade (every game he played, for any team), never below 0. So depth near replacement level adds little, and one star beats two average players. The number by each name is value got minus value given; pts and g = his rest-of-season points and games.')
       : 'Pts = starter points each player scored for his new team after the trade' + (dynasty ? ', including later seasons while he stayed' : ', rest of that season') + '. The number by each name is the net. Picks count as 0.'}</p>
   </div>`;
@@ -443,7 +443,7 @@ function liveGames(S, week, list) {
 }
 
 // Every award a season hands out. The season tab shows the tile set; the Awards page shows all of them.
-const SEASON_TILE_AWARDS = ['waiver', 'trade', 'steal', 'scout', 'bust', 'blunder', 'sacko'];
+const SEASON_TILE_AWARDS = ['waiver', 'trade', 'steal', 'scout', 'bust', 'fleeced', 'blunder', 'sacko'];
 function seasonAwards(S) {
   const aw = [];
   const done = !S.isCurrent;
@@ -464,6 +464,14 @@ function seasonAwards(S) {
   let toy = null;
   S.trades.forEach(t => t.sides.forEach(x => { if (!toy || x.net > toy.s.net) toy = { t, s: x }; }));
   if (toy && toy.s.net > 0) aw.push({ key: 'trade', k: 'Trade of the Year', rid: toy.s.rid, v: signed(toy.s.net), d: tradeWhen(toy.t) + ' · got ' + (toy.s.got.map(g => player(g.pid)).join(', ') || 'picks'), cls: 'gold-t', good: true });
+  // Fleeced: the other end of a lopsided trade, the side that lost the most value in a single trade.
+  let flc = null;
+  S.trades.forEach(t => t.sides.forEach(x => { if (!flc || x.net < flc.s.net) flc = { t, s: x }; }));
+  if (flc && flc.s.net < 0) {
+    const gave = flc.s.sent.map(g => player(g.pid)).concat(flc.t.picks.filter(d => d.from === flc.s.rid).map(d => 'R' + d.round + ' pick'));
+    const to = flc.t.sides.filter(x => x !== flc.s).map(x => name(S.ownerOf[x.rid])).join(' & ');
+    aw.push({ key: 'fleeced', k: 'Fleeced', rid: flc.s.rid, v: signed(flc.s.net), d: tradeWhen(flc.t) + ' · gave ' + (gave.join(', ') || 'picks') + ' to ' + to, cls: 'bad-t', good: false });
+  }
   // Dynasty: Scout of the Year replaces Steal of the Draft. It adds up what each manager's rookie-draft picks
   // produced that season (players in their first 3 seasons), so a finished season's winner never changes.
   if (LG.format === 'dynasty' && M && M.dynDrafts && M.dynDrafts.length) {
@@ -494,8 +502,8 @@ function seasonAwards(S) {
   const lastR = S.lastPlace != null ? S.st[S.lastPlace] : S.standings[S.standings.length - 1];
   aw.push({ key: 'sacko', k: S.isCurrent ? 'Sacko watch' : 'Sacko', rid: lastR.rid, v: wl(lastR.wins, lastR.losses, lastR.ties),
     d: (S.isCurrent ? 'Worst record so far · ' : S.toiletBowl ? 'Lost the toilet bowl · ' : 'Worst record · ') + comma(lastR.pf) + ' PF', cls: 'sacko-t2', good: false });
-  // Dynasty leagues don't hand out Waiver Wire King, Trade of the Year or Bust of the Draft.
-  return LG.format === 'dynasty' ? aw.filter(x => ['waiver', 'trade', 'bust'].indexOf(x.key) < 0) : aw;
+  // Dynasty leagues don't hand out Waiver Wire King, Trade of the Year, Fleeced or Bust of the Draft.
+  return LG.format === 'dynasty' ? aw.filter(x => ['waiver', 'trade', 'fleeced', 'bust'].indexOf(x.key) < 0) : aw;
 }
 
 function viewSeason(S) {
@@ -1597,7 +1605,9 @@ function awardDesc(key) {
     bestMgr: 'Highest Manager Score that season: results, start/sit, waivers and trades' + (dyn ? '' : ', plus the draft') + ', each compared with the rest of the league.',
     worstMgr: 'Lowest Manager Score that season.',
     waiver: 'Most points above replacement from waiver and free-agent pickups, counting every week they started for the team.',
-    trade: 'The single trade that gained the most starter points that season compared with what was given up.',
+    trade: dyn ? 'The single trade that gained the most starter points that season compared with what was given up.'
+      : 'The trade won by the most that season: value got minus value given for the rest of the season, where each player counts his points above a replacement-level starter at his position (never below 0) and each draft pick counts what a pick in its slot is expected to give.',
+    fleeced: 'The trade lost by the most that season, the other end of a lopsided deal: value given up minus value got, measured the same way as Trade of the Year.',
     steal: 'The draft pick that beat his draft slot by the most (kickers and defenses don\'t count).',
     scout: 'Most points above replacement that season from the manager\'s own rookie-draft picks still in their first three seasons, with elite seasons counting extra. Once a season ends, its winner never changes.',
     bust: 'The round 1–3 pick that fell furthest short of his draft slot.',
@@ -1609,7 +1619,7 @@ function awardDesc(key) {
   })[key] || '';
 }
 
-const AWARD_ORDER = ['champion', 'runnerUp', 'regSeason', 'bestMgr', 'waiver', 'trade', 'steal', 'scout', 'highScore', 'luckiest', 'worstMgr', 'bust', 'unluckiest', 'blunder', 'sacko'];
+const AWARD_ORDER = ['champion', 'runnerUp', 'regSeason', 'bestMgr', 'waiver', 'trade', 'steal', 'scout', 'highScore', 'luckiest', 'worstMgr', 'bust', 'fleeced', 'unluckiest', 'blunder', 'sacko'];
 function viewAwards() {
   const bySeason = M.seasons.map(S => ({ S, list: seasonAwards(S) }));
   const out = [];
