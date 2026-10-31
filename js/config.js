@@ -15,6 +15,10 @@ export const CONFIG = {
   // (they're easy to replace and swing week to week). 1 = full value.
   kDefWeight: 0.5,
 
+  // Dynasty trades: seasons counted after a trade (the trade season is the first), how much less each later season
+  // counts, and the extra a season counts for the receiving team when it made the playoffs or won the title.
+  dynTrade: { seasons: 4, decay: 0.15, playoffBonus: 0.10, titleBonus: 0.25 },
+
   // Bonus points added to the Results part of the score.
   bonus: { playoffs: 3, final: 5, title: 15 },
 

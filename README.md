@@ -7,6 +7,8 @@ A demo of the Sleeper Hall of Fame with two 12-team leagues, switchable at the t
 
 Redraft trades are judged in a vacuum: each player is worth his points above a replacement-level starter at his position for the rest of the season after the trade (every game he played, for any team), never below 0, so a 2-for-1 of near-replacement depth adds little. A traded pick is worth the points above replacement that pick's slot is expected to give, the same number the draft grades use. A side's trade score is value got minus value given.
 
+Dynasty trades are judged in a vacuum over four seasons: each player's value in the trade season (weeks after the trade) and the next three, the same per-season value the rookie-draft grades use (points above replacement, elite seasons multiplied), counted at 100% / 85% / 70% / 55%, plus 10% for a season the receiving team made the playoffs with him (25% for a title). Traded rookie picks keep a fixed value: what that slot (or the round, before the order is set) is expected to give over the same window. Some demo dynasty trades include future rookie picks.
+
 Everything is generated in the browser from a seed, so the same link always shows the same league. "New league" (top right) re-runs it with different managers (`?seed=<number>`).
 
 `real.json` is rebuilt from nflverse with the script kept outside this repo (`build_real.py`, included here).

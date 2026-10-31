@@ -218,7 +218,7 @@ function simulateSeason(season, owners, isCurrent, carry) {
       seq.forEach(orig => {
         pickNo++;
         // A traded pick is made by its new owner, in the original team's slot.
-        const r = kind === 'main' && MODE === 'redraft' ? pickOwner(season, rd, orig) : orig;
+        const r = (kind === 'main' && MODE === 'redraft') || kind === 'rookie' ? pickOwner(season, rd, orig) : orig;
         const have = {}; roster[r].forEach(pid => { const ps = players[pid].pos; have[ps] = (have[ps] || 0) + 1; });
         const left = rounds - rd;
         let best = null; let bestV = -1e9;
@@ -369,7 +369,17 @@ function simulateSeason(season, owners, isCurrent, carry) {
           if (back) {
             roster[a] = roster[a].filter(x => x !== pa).concat([back]);
             roster[b] = roster[b].filter(x => x !== back).concat([pa]);
-            transactions.push({ type: 'trade', leg: w, adds: { [back]: a, [pa]: b }, drops: { [pa]: a, [back]: b }, roster_ids: [a, b], bid: null, created: baseTime + w * 7 * 864e5 - 3 * 864e5 + randint(0, 864e5), picks: [] });
+            // Dynasty: some trades add one of next year's or the year after's rookie picks as a sweetener.
+            const tp = [];
+            if (MODE === 'dynasty' && rand() < 0.45) {
+              const giver = rand() < 0.5 ? a : b; const taker = giver === a ? b : a;
+              const yr = season + randint(1, 2); const rd = randint(1, ROOKIE_ROUNDS);
+              if (pickOwner(yr, rd, giver) === giver) {
+                ((PICK_OWNER[yr] = PICK_OWNER[yr] || {})[rd] = PICK_OWNER[yr][rd] || {})[giver] = taker;
+                tp.push({ season: String(yr), round: rd, from: giver, to: taker, orig: giver });
+              }
+            }
+            transactions.push({ type: 'trade', leg: w, adds: { [back]: a, [pa]: b }, drops: { [pa]: a, [back]: b }, roster_ids: [a, b], bid: null, created: baseTime + w * 7 * 864e5 - 3 * 864e5 + randint(0, 864e5), picks: tp });
             break;
           }
         }
