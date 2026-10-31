@@ -1,7 +1,7 @@
 // Turns raw Sleeper data into every stat, award and score the site shows.
 // Pure functions only: nothing here touches the page or the network.
 
-import { CONFIG } from './config.js?v=202610310020';
+import { CONFIG } from './config.js?v=202610310030';
 
 const ELIGIBLE = {
   QB: ['QB'], RB: ['RB'], WR: ['WR'], TE: ['TE'], K: ['K'], DEF: ['DEF'],
@@ -372,9 +372,9 @@ function buildSeason(raw, players, isNewest, later, format, opts) {
   trades.forEach(t => {
     if (!t.valueMode) { t.sides.forEach(sd => { const T = tradeNet[sd.rid]; if (T) { T.net += sd.net; T.count++; } }); return; }
     if (t.dyn) {
-      // Dynasty: each player's discounted value over the trade season and the next three, with the contender bonus
-      // for the team that received him; each pick at its fixed slot (or round) value.
-      t.sides.forEach(sd => sd.got.forEach(g => Object.assign(g, opts.dynTrade.player(raw.season, t.week, g.pid, sd.rid))));
+      // Dynasty: each player's discounted value over the trade season and the next three; each pick at its fixed
+      // slot (or round) value.
+      t.sides.forEach(sd => sd.got.forEach(g => Object.assign(g, opts.dynTrade.player(raw.season, t.week, g.pid))));
       t.picks.forEach(dp => { const v = opts.dynTrade.pick(dp); dp.value = v ? v.value : null; dp.estimate = v ? v.estimate : false; dp.pickNo = v ? v.pickNo : null; dp.slotLabel = v ? v.slotLabel : null; });
       t.yearsIn = opts.dynTrade.yearsIn(raw.season); t.windowDone = opts.dynTrade.windowDone(raw.season);
     } else {
@@ -696,14 +696,13 @@ function draftCurves(seasons) {
 // ---------- Dynasty trades ----------
 // A traded player is worth his value over the trade season (weeks after the trade) and the next three seasons, the
 // same per-season value the rookie-draft grades use (points above a replacement-level starter at his position, never
-// below 0, with elite seasons multiplied), each later season counting less (100% / 85% / 70% / 55%). A season counts
-// a little extra for the team that received him if he was on its roster when it made the playoffs (+10%) or won the
-// title (+25%). A traded rookie pick keeps one fixed value: what a pick in that slot is expected to give over the same
-// window, judged from this league's rookie drafts, or the round's average while the draft order isn't known.
+// below 0, with elite seasons multiplied), each later season counting less (100% / 85% / 70% / 55%), judged in a
+// vacuum: it doesn't matter which team he was on. A traded rookie pick keeps one fixed value: what a pick in that slot
+// is expected to give over the same window, judged from this league's rookie drafts, or the round's average while the
+// draft order isn't known.
 function dynastyTradeValues(pre) {
   const D = CONFIG.dynTrade || {};
   const N = D.seasons || 4; const decay = D.decay != null ? D.decay : 0.15;
-  const pb = D.playoffBonus != null ? D.playoffBonus : 0.10; const tb = D.titleBonus != null ? D.titleBonus : 0.25;
   const wt = i => Math.max(0, 1 - decay * i);
   const wsum = n => { let t = 0; for (let i = 0; i < n; i++) t += wt(i); return t; };
   const by = {}; pre.forEach(S => { by[S.season] = S; });
@@ -711,25 +710,19 @@ function dynastyTradeValues(pre) {
   const tiers = (S, pos) => { const r = S.replacement[pos]; const n = S.rids.length; const tight = !r || (r.rank - 1) <= n * 1.3;
     return (tight ? [2, 4, 8] : [3, 6, 12]).map(x => Math.max(1, Math.round(x * n / 12))); };
   const mult = (S, pid) => { const k = S.posRank[pid]; if (!k) return 1; const t = tiers(S, S.posOf(pid)); return k <= t[0] ? 2 : k <= t[1] ? 1.6 : k <= t[2] ? 1.3 : 1; };
-  const rosterAtEnd = (S, rid, pid) => { for (let w = Math.min(S.playoffWeekStart - 1, S.scoredThrough); w >= 1; w--) { const m = S.byWeek[w] && S.byWeek[w][rid]; if (m) return m.players.indexOf(pid) >= 0; } return false; };
   const restPor = (S, pid, fromWeek) => {
     let pts = 0; let gp = 0;
     S.regWeeks.forEach(w => { if (w < fromWeek) return; let x = null; Object.values(S.byWeek[w] || {}).forEach(m => { if (m.players_points && m.players_points[pid] != null) x = m.players_points[pid]; }); if (x != null && x > 0) { pts += x; gp++; } });
     return Math.max(0, pts - gp * S.replPpg(S.posOf(pid)));
   };
-  const player = (season, week, pid, rid) => {
-    const Y = Number(season); const S0 = by[season]; const owner = S0 ? S0.ownerOf[rid] : null;
+  const player = (season, week, pid) => {
+    const Y = Number(season);
     let value = 0; let seasons = 0; const years = [];
     for (let i = 0; i < N; i++) {
       const S = by[String(Y + i)]; if (!S) break;
       const base = (i === 0 ? restPor(S, pid, week) : Math.max(0, S.aboveRepl(pid))) * mult(S, pid) * (S.kdw ? S.kdw(S.posOf(pid)) : 1);
-      const r2 = S.rids.find(x => S.ownerOf[x] === owner);
-      let bonus = 1; let tag = '';
-      if (r2 != null && S.status === 'complete' && rosterAtEnd(S, r2, pid)) {
-        if (S.champion === r2) { bonus = 1 + tb; tag = 'title'; } else if (S.playoffRids.has(r2)) { bonus = 1 + pb; tag = 'playoffs'; }
-      }
-      const v = base * bonus * wt(i);
-      years.push({ season: S.season, value: v, base, bonus: tag, partial: S.isCurrent });
+      const v = base * wt(i);
+      years.push({ season: S.season, value: v, base, partial: S.isCurrent });
       value += v; seasons++;
     }
     let pts = 0; years.forEach(y => { pts += y.base; });
