@@ -1,7 +1,7 @@
 // Turns raw Sleeper data into every stat, award and score the site shows.
 // Pure functions only: nothing here touches the page or the network.
 
-import { CONFIG } from './config.js?v=202610310030';
+import { CONFIG } from './config.js?v=202610310050';
 
 const ELIGIBLE = {
   QB: ['QB'], RB: ['RB'], WR: ['WR'], TE: ['TE'], K: ['K'], DEF: ['DEF'],
@@ -740,25 +740,26 @@ function dynastyTradeValues(pre) {
   });
   const used = new Set(classes.map(C => C.season)).size;
   const maxPick = Math.max(teams * 3, ...classes.map(C => C.picks.length));
-  let curve = null;
-  if (pool.length) {
-    const win = Math.max(3, Math.round(teams * 0.75));
-    const lam = Math.max(4, teams * 1.2); const shape = k => Math.exp(-(k - 1) / lam);
-    const level = mean(pool.map(q => q.v)) / (mean(pool.map(q => shape(q.at))) || 1);
-    const trust = used / (used + 3);
-    const vals = [];
-    for (let k = 1; k <= maxPick; k++) {
-      let ws = 0; let t = 0;
-      pool.forEach(q => { const d = Math.abs(q.at - k); if (d <= win) { const w = 1 - d / (win + 1); ws += w; t += w * q.v; } });
-      const local = ws ? t / ws : level * shape(k);
-      vals.push(trust * local + (1 - trust) * level * shape(k));
-    }
-    const smooth = nonIncreasing(vals);
-    curve = k => Math.max(0, smooth[Math.min(smooth.length, Math.max(1, k)) - 1]);
+  // Starting chart, used until the league has its own rookie history and blended out as that history builds up
+  // (2 finished classes = 40% the league's own, 4 = 57%, 8 = 73%). It comes from real NFL rookies (2017-2025) in a
+  // simulated 12-team superflex PPR league: the 4-season value of each overall pick, averaged over five leagues.
+  const PRIOR = [184, 177, 170, 163, 156, 149, 142, 134, 125, 116, 107, 99, 92, 85, 79, 74, 68, 63, 59, 57, 54, 51, 47, 44,
+    41, 38, 35, 33, 31, 29, 27, 25, 23, 22, 22, 21];
+  const prior = k => { const x = (k - 1) * 12 / teams + 1; if (x <= PRIOR.length) { const i = Math.floor(x); const f = x - i;
+    return i >= PRIOR.length ? PRIOR[PRIOR.length - 1] : PRIOR[i - 1] * (1 - f) + PRIOR[i] * f; }
+    return PRIOR[PRIOR.length - 1] * Math.exp(-(x - PRIOR.length) / 12); };
+  const win = Math.max(3, Math.round(teams * 0.75));
+  const trust = used / (used + 3);
+  const vals = [];
+  for (let k = 1; k <= maxPick; k++) {
+    let ws = 0; let t = 0;
+    pool.forEach(q => { const d = Math.abs(q.at - k); if (d <= win) { const w = 1 - d / (win + 1); ws += w; t += w * q.v; } });
+    vals.push(ws ? trust * (t / ws) + (1 - trust) * prior(k) : prior(k));
   }
-  const roundAvg = rd => { if (!curve) return 0; let t = 0; for (let s = 1; s <= teams; s++) t += curve((rd - 1) * teams + s); return t / teams; };
+  const smooth = nonIncreasing(vals);
+  const curve = k => Math.max(0, k <= smooth.length ? smooth[Math.max(1, k) - 1] : prior(k));
+  const roundAvg = rd => { let t = 0; for (let s = 1; s <= teams; s++) t += curve((rd - 1) * teams + s); return t / teams; };
   const pick = dp => {
-    if (!curve) return { value: 0, estimate: true, pickNo: null, slotLabel: null };
     const S = by[String(dp.season)];
     const dr = S && (S.drafts || []).find(x => x.kind === 'rookie' && (x.picks || []).length);
     if (dr && dr.slotToRoster) {
