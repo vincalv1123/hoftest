@@ -660,3 +660,7 @@ export async function loadWeekStats(season, week, live) {
   });
   return out;
 }
+
+// The demo has no lost managers to name (see the main site's data.js); these keep the shared page code working.
+export async function checkOwner() { return { found: false }; }
+export function saveOwner() { return false; }
