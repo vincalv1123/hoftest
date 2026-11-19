@@ -575,7 +575,7 @@ export async function loadAll(league, onProgress) {
   let real = null;
   if (league && league.format === 'dynasty') {
     onProgress && onProgress('Loading real player stats…');
-    real = await (await fetch('real.json?v=1')).json();
+    real = await (await fetch('real.json?v=202611190417')).json();
   }
   built = build(seedFromUrl(), league && league.format, real);
   built.startedAt = Date.now();
